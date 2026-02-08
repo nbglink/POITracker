@@ -1,0 +1,141 @@
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Bloomberg-like design tokens (HSL) */
+    --bg: 220 15% 5%;
+    --panel: 220 12% 8%;
+    --panel-hover: 220 12% 11%;
+    --border: 220 10% 18%;
+    --border-strong: 220 10% 25%;
+
+    --text: 60 10% 92%;
+    --text-muted: 220 8% 60%;
+    --text-faint: 220 8% 40%;
+
+    --accent: 24 95% 53%;
+    --accent-hover: 24 95% 45%;
+
+    --success: 158 64% 42%;
+    --danger: 0 65% 51%;
+    --warning: 43 90% 55%;
+    --info: 187 80% 48%;
+
+    --focus-ring: 187 80% 48%;
+
+    --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-terminal: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* Legacy variable aliases used across existing components */
+    --background: var(--bg);
+    --foreground: var(--text);
+
+    --card: var(--panel);
+    --card-hover: var(--panel-hover);
+    --card-border: var(--border);
+
+    --primary: var(--accent);
+    --primary-hover: var(--accent-hover);
+
+    --profit: var(--success);
+    --loss: var(--danger);
+
+    --input-bg: var(--bg);
+    --input-border: var(--border);
+    --input-focus: var(--focus-ring);
+  }
+
+  body {
+    @apply bg-[hsl(var(--bg))] text-[hsl(var(--text))];
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .font-mono {
+    font-family: var(--font-terminal);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums slashed-zero;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  /* Thin border + subtle inner shadow (no neon glow) */
+  .terminal-card {
+    @apply bg-[hsl(var(--panel))];
+    border: 1px solid hsl(var(--border));
+    border-radius: 3px;
+    box-shadow: inset 0 1px 0 0 hsl(var(--border) / 0.35);
+  }
+
+  .terminal-card:hover {
+    border-color: hsl(var(--border-strong));
+  }
+
+  /* Terminal badge utilities (sharp, bordered, no glow/gradient) */
+  .terminal-badge {
+    @apply inline-flex items-center;
+    background: hsl(var(--panel));
+    border: 1px solid hsl(var(--border));
+    border-radius: 2px;
+    box-shadow: none;
+    font-family: var(--font-terminal);
+    font-variant-numeric: tabular-nums slashed-zero;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    color: hsl(var(--badge-color, var(--text)));
+  }
+
+  .terminal-badge-success {
+    --badge-color: var(--success);
+  }
+
+  .terminal-badge-danger {
+    --badge-color: var(--danger);
+  }
+
+  .terminal-badge-warning {
+    --badge-color: var(--warning);
+  }
+
+  /* Replace glow effects with a status stripe */
+  .hero-glow,
+  .hero-glow-warning,
+  .hero-glow-loss {
+    box-shadow: none;
+    border-left-width: 3px;
+    border-left-style: solid;
+  }
+
+  .hero-glow {
+    border-left-color: hsl(var(--success));
+  }
+
+  .hero-glow-warning {
+    border-left-color: hsl(var(--warning));
+  }
+
+  .hero-glow-loss {
+    border-left-color: hsl(var(--danger));
+  }
+
+  /* Back-compat: the app uses this utility class name in a few places */
+  .text-muted-foreground {
+    color: hsl(var(--text-muted));
+  }
+}
