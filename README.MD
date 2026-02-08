@@ -69,4 +69,4 @@ Frontend runs at `http://localhost:5173`.
 GitHub Actions workflow is in `.github/workflows/ci.yml`:
 
 - Backend: Windows runner, installs requirements, compiles python modules, import smoke test
-- Frontend: Node build
+- Frontend: Node build #test comment
