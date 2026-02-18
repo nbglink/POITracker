@@ -2,224 +2,468 @@
 
 Last updated: 2026-02-18
 
-## 1) Purpose
+---
 
-Build a local Windows application for **POI-based trading** (Points of Interest).
+## 1. Overview
 
-Traders identify key levels on their MT5 charts — Fair Value Gaps (FVGs), Order Blocks, liquidity sweeps, supply/demand zones — and use this tool to place orders at those levels with automatically calculated, risk-managed lot sizes.
+### 1.1 What This Tool Does
 
-The tool does **not** detect POIs. The trader performs the analysis; this tool handles:
+A local Windows application for **POI-based trading**. Traders analyze their charts in MetaTrader 5, identify Points of Interest (Fair Value Gaps, Order Blocks, liquidity sweeps, supply/demand zones), and use this tool to:
 
-- Calculating risk-based volume (lot size) from account balance, risk %, and stop distance to the POI.
-- Showing target risk vs actual risk (actual can exceed target when min lot is enforced).
-- Placing market or pending orders at POI entry prices via the MT5 Python API.
-- TP1 management (partial close + optional move to break-even) and a background TP1 watcher.
-- Streaming live ticks/account data to the UI via WebSocket for real-time POI proximity awareness.
+1. **Calculate** the correct lot size for a given risk percentage and stop distance.
+2. **Place** market or pending orders at POI levels with proper risk management.
+3. **Manage** open trades: automated TP1 partial close, SL move to break-even, and manual partial close at any time.
+4. **Monitor** positions with real-time price streaming and toast notifications for TP1/SL events.
 
-Primary instruments: XAUUSD, BTCUSD, common Forex pairs.
+The tool does **not** detect or draw POIs — the trader performs the chart analysis; this tool handles execution and risk management.
 
-## 2) Architecture
+### 1.2 Primary Instruments
 
-Frontend (React/Vite) → Backend (FastAPI) → MT5 terminal (Windows)
+| Instrument | Pip Size | Default SL | Default TP1 | Max SL |
+|------------|----------|------------|-------------|--------|
+| XAUUSD     | 0.10     | 50 pips    | 30 pips     | 50 pips |
+| BTCUSD     | 1.00     | 500 pips   | 300 pips    | 1000 pips |
+| Forex      | 0.0001   | 50 pips    | 30 pips     | 50 pips |
 
-Typical flow:
+Secondary: any symbol available in the trader's MT5 terminal.
 
-1) Trader identifies a POI (FVG, Order Block, supply/demand zone) on the MT5 chart.
-2) Trader enters the entry price, stop distance, and risk % into the UI.
-3) UI calls `POST /calc` to compute volume + risk and show warnings.
-4) Trader optionally arms execution and confirms the order.
-5) UI calls MT5 endpoints to place a market or pending order at the POI level.
-6) Post-order management: TP1 partial close, move SL to break-even, background watcher.
-7) UI subscribes to live tick/account updates via WebSocket for real-time monitoring.
+---
 
-## 3) Technology stack
+## 2. Trading Strategy & Rules
 
-- Frontend: React (Vite), TypeScript, Tailwind, settings stored in localStorage.
-- Backend: Python 3.11+, FastAPI, Pydantic, MetaTrader5, python-dotenv/pydantic-settings.
-- OS constraint: Windows-only for live trading (MT5 Python API requirement).
+### 2.1 Entry
 
-## 4) Core calculation inputs
+The trader identifies a POI on the chart and enters:
 
-Current `RiskCalcInput` fields (backend model):
+- **Entry price** — the POI level (or current market price for immediate entry).
+- **Direction** — buy or sell.
+- **Stop-loss distance in pips** — distance from entry to the invalidation level.
+- **Risk percentage** — how much of the account to risk on this trade.
 
-- `account_balance`
-- `risk_percent`
-- `symbol`
-- `direction`: `buy` | `sell`
-- `entry_price`
-- `stop_pips`
-- `max_stop_pips`
-- `tp1_pips` (optional)
-- `partial_percent`
-- `move_to_be_enabled`
-- `be_buffer_pips`
-- `pip_value_per_1_lot` (client-provided fallback)
-- `min_volume`
-- `volume_step`
+The tool calculates the lot size and shows the full trade plan before execution.
 
-Note: the backend will try to auto-derive pip value from MT5 tick specs when possible.
+### 2.2 Stop-Loss Constraints
 
-## 5) Risk & volume calculation (implementation)
+Each instrument has a **maximum allowed stop-loss** enforced by the strategy:
 
-### 5.1 Target risk
+| Instrument | Max Stop-Loss |
+|------------|---------------|
+| XAUUSD     | 50 pips       |
+| BTCUSD     | 1000 pips     |
+| Forex      | 50 pips       |
 
-`target_risk_amount = account_balance × risk_percent / 100`
+If the trader enters a stop distance **exceeding the max**, the UI:
 
-### 5.2 Raw volume
+- Shows a **warning banner** that this stop is too large for the strategy.
+- Marks the trade as **not allowed** (`allowed = false`).
+- The execute button is **disabled/blocked** — the order cannot be sent.
 
-`volume_raw = target_risk_amount / (stop_pips × pip_value_per_1_lot)`
+This enforces discipline — if the POI requires a wider stop, the trader should skip the trade or find a tighter entry.
 
-### 5.3 Broker constraints
+### 2.3 TP1 — Automatic Partial Close + Break-Even
 
-- Volume is floored to `volume_step` (never rounded up).
-- Minimum volume is enforced and aligned to the step (ceil-to-step for `min_volume`, then floor-to-step for final).
-- Implementation uses Decimal arithmetic to avoid floating point step bugs.
+Once a trade is open, the **TP1 rule** activates:
 
-### 5.4 Actual risk
+| Instrument | TP1 Distance | Action at TP1 |
+|------------|-------------|---------------|
+| XAUUSD     | +30 pips    | Close 50% of position, move SL to break-even |
+| BTCUSD     | +300 pips   | Close 50% of position, move SL to break-even |
+| Forex      | +30 pips    | Close 50% of position, move SL to break-even |
 
-`actual_risk_amount = volume × stop_pips × pip_value_per_1_lot`
+**How it works:**
 
-`actual_risk_percent = (actual_risk_amount / account_balance) × 100`
+1. Price moves **+30 pips** (XAUUSD) or **+300 pips** (BTCUSD) in the trade's favor.
+2. The tool **closes 50%** of the position (volume normalized to broker's volume_step).
+3. The tool **moves SL to the entry price** (break-even), locking in a risk-free remainder.
+4. The remaining 50% runs with zero risk — the trader manages the exit manually or lets it hit SL at BE.
 
-### 5.5 Allowed rule
+**TP1 can be triggered two ways:**
 
-Trade is marked `allowed` only when:
+- **Automatically** — via the background TP1 Watcher (polls every 500ms, no screen-watching needed).
+- **Manually** — via the "TP1" button in the PostOrderPanel UI.
 
-`stop_pips ≤ max_stop_pips`
+### 2.4 Manual Partial Close (Any Time)
 
-### 5.6 Warnings
+While a position is open, the trader can **manually close a portion** at any time using the PostOrderPanel:
 
-The engine emits warnings for:
+| Button | Action |
+|--------|--------|
+| **25%** | Close 25% of the current position volume |
+| **50%** | Close 50% of the current position volume |
+| **75%** | Close 75% of the current position volume |
+| **100%** | Close the entire position |
 
-- Stop exceeding max stop
-- Volume being forced up to minimum (actual risk can exceed target)
-- Actual risk significantly exceeding target
+The backend normalizes the close volume to the broker's `volume_step` and **blocks** the close if:
 
-## 6) Pip value derivation (current behavior)
+- The remaining volume would fall **below `min_lot`** (would create an un-closeable micro-position).
+- The close volume itself is below `min_lot`.
 
-The backend attempts to compute `pip_value_per_1_lot` from MT5:
+This prevents the trader from accidentally leaving a tiny position that the broker won't allow to close.
 
-Preferred method:
+### 2.5 When a Trade Goes Against You
 
-- Use `mt5.order_calc_profit()` for a 1-lot buy move of +1 pip (conversion-aware to account currency).
+If the trade moves against the trader and hits the stop-loss:
 
-Fallback method:
+- The **maximum loss** is limited to the pre-calculated risk amount (e.g., 1% of account balance).
+- The TP1 Watcher detects the position disappearance, looks up the deal history, and displays a **toast notification** with the realized loss amount.
+- If TP1 had **already been triggered** (SL moved to BE), the loss is **zero** — the trade was risk-free.
 
-- Use tick specs: `pip_value_per_1_lot = (pip_in_price / tick_size) × tick_value`.
+### 2.6 Strategy Summary
 
-Pip definition in price (`pip_in_price`) is derived by symbol heuristics:
+```
+Entry at POI Level (FVG / Order Block / Supply-Demand Zone)
+│
+├─── Price moves IN FAVOR (+30 pips XAUUSD / +300 pips BTCUSD)
+│    ├── ✅ Close 50% of position (lock profit)
+│    ├── ✅ Move SL → Break-Even (trade is now risk-free)
+│    └── Remaining 50% runs freely — manage exit manually
+│
+├─── Price moves AGAINST and hits Stop-Loss (before TP1)
+│    └── ❌ Lose the pre-calculated risk amount (e.g., 1% of account)
+│
+└─── At ANY TIME while position is open
+     └── 🔧 Manual partial close: 25% / 50% / 75% / 100%
+```
 
-- XAU: 0.10
-- BTC: 1.00
-- Forex: digits-based defaults (5 digits → 0.0001, 3 digits → 0.01)
+---
 
-If MT5 tick data is unavailable, the backend uses the client-provided `pip_value_per_1_lot`.
+## 3. Architecture
 
-## 7) Execution safety model (dual authorization)
+```
+┌─────────────────────┐       ┌──────────────────────┐       ┌─────────────────┐
+│  React/Vite (5173)  │──HTTP─▶  FastAPI (8000)      │──MT5──▶  MT5 Terminal   │
+│  TypeScript         │──WS───▶  Python              │  API  │  (Windows)      │
+│  Tailwind CSS       │       │  Pydantic            │       │                 │
+└─────────────────────┘       └──────────────────────┘       └─────────────────┘
+```
 
-All execution endpoints are protected by two independent checks:
+### 3.1 Technology Stack
 
-1) Backend global flag: `MT5_EXECUTION_ENABLED=true`
-2) UI armed state:
-	 - stored in backend memory via `POST /mt5/armed`, and/or
-	 - passed per-request via `ui_armed` fields on execution payloads
+| Layer        | Technology                                    |
+|--------------|-----------------------------------------------|
+| Frontend     | React 18, TypeScript, Vite 5, Tailwind CSS    |
+| State        | React Context + localStorage persistence      |
+| HTTP Client  | Axios (base URL `localhost:8000`, 10s timeout) |
+| Backend      | Python 3.11+, FastAPI, Pydantic               |
+| Broker API   | MetaTrader5 Python package                    |
+| Config       | pydantic-settings, `.env` file                |
+| OS           | Windows-only (MT5 Python API constraint)      |
 
-If either check fails, the backend denies execution (either via HTTP 403 for some routes or `success=false` responses for others).
+### 3.2 End-to-End Trade Flow
 
-Important: keep this pattern intact; do not bypass it.
+```
+1. Trader identifies POI on MT5 chart (FVG, Order Block, etc.)
+         │
+2. Enters entry price, stop distance, risk %, direction
+         │
+3. UI calls POST /calc
+   └── Backend auto-derives pip value from MT5
+   └── risk_engine computes lot size (pure math, Decimal)
+         │
+4. UI displays: volume, target vs actual risk, warnings, TP1 plan
+         │
+5. Trader arms toggle → clicks "Execute"
+         │
+6. UI calls POST /mt5/order
+   └── Dual authorization check (backend flag + UI armed)
+   └── Order placed in MT5 (market or pending)
+         │
+7. PostOrderPanel appears with trade management controls
+   ├── TP1 button (manual)
+   ├── Partial close buttons: 25% / 50% / 75% / 100%
+   ├── Move SL to BE button
+   └── Auto TP1 Watcher toggle
+         │
+8. Background: TP1 Watcher polls positions every 500ms
+         │
+9. Toast notifications on TP1 hit (profit) or SL hit (loss)
+```
 
-## 8) Backend API (implementation-aligned)
+---
+
+## 4. Risk & Volume Calculation
+
+All calculation logic lives in `risk_engine.py` — **pure math, zero MT5 imports**, fully unit-testable in isolation.
+
+### 4.1 Core Formula
+
+```
+target_risk   = account_balance × risk_percent / 100
+volume_raw    = target_risk / (stop_pips × pip_value_per_1_lot)
+```
+
+### 4.2 Broker Constraints (Decimal Arithmetic)
+
+1. **Floor** `volume_raw` to the nearest `volume_step` (never round up — never risk more than intended).
+2. **Enforce minimum**: if floored volume < `min_volume`, use `min_volume` (ceil-aligned to step).
+3. All arithmetic uses Python `Decimal` to avoid floating-point step bugs.
+
+### 4.3 Actual vs Target Risk
+
+Because minimum lot enforcement can push volume above what the formula produced:
+
+```
+actual_risk_amount  = volume × stop_pips × pip_value_per_1_lot
+actual_risk_percent = (actual_risk_amount / account_balance) × 100
+```
+
+The UI displays **both** target and actual risk side-by-side so the trader always sees real exposure.
+
+### 4.4 Warnings
+
+| Condition | Warning | Effect |
+|-----------|---------|--------|
+| `stop_pips > max_stop_pips` | "Stop exceeds maximum for this strategy" | Trade **blocked** |
+| Volume forced to min_lot | "Volume rounded to minimum — actual risk exceeds target" | Trade allowed, warning shown |
+| `actual_risk > 110% of target` | "Actual risk significantly exceeds target" | Trade allowed, warning shown |
+
+### 4.5 Trade Plan Output
+
+The calculation also returns the full TP1 management plan:
+
+- **TP1 price** — entry ± tp1_pips (direction-aware)
+- **Partial close volume** — 50% of position, normalized to volume_step
+- **Break-even SL price** — entry price ± optional buffer
+- **Remaining volume** — what stays open after TP1
+
+---
+
+## 5. Pip Value Derivation
+
+The backend automatically computes `pip_value_per_1_lot` from MT5 symbol data. Located in `pip_specs.py`.
+
+### 5.1 Preferred Method
+
+Use `mt5.order_calc_profit()` to simulate a 1-lot position moving +1 pip. Handles cross-currency conversion to the account currency automatically.
+
+### 5.2 Fallback Formula
+
+```
+pip_value_per_1_lot = (pip_in_price / tick_size) × tick_value
+```
+
+### 5.3 Pip Definitions
+
+| Instrument Type  | `pip_in_price` | Example |
+|-----------------|----------------|---------|
+| XAU / Gold      | 0.10           | XAUUSD  |
+| BTC             | 1.00           | BTCUSD  |
+| Forex (5-digit) | 0.0001         | EURUSD  |
+| Forex (3-digit) | 0.01           | USDJPY  |
+
+### 5.4 Fallback Chain
+
+MT5 available → use `order_calc_profit()` → if that fails → use tick formula → if MT5 unavailable entirely → use client-provided `pip_value_per_1_lot` from symbol preset.
+
+---
+
+## 6. Execution Safety — Dual Authorization
+
+**ALL order execution requires BOTH checks to pass. Never bypass this pattern.**
+
+### 6.1 Two Independent Guards
+
+| Guard | Source | Default |
+|-------|--------|---------|
+| Backend flag | `MT5_EXECUTION_ENABLED` environment variable | `false` |
+| UI armed state | Frontend toggle + `ui_armed` request parameter | `false` |
+
+### 6.2 Authorization Matrix
+
+| Backend Flag | UI Armed | Result |
+|:------------:|:--------:|:------:|
+| ❌ | ❌ | **Denied** |
+| ✅ | ❌ | **Denied** |
+| ❌ | ✅ | **Denied** |
+| ✅ | ✅ | **✅ Allowed** |
+
+### 6.3 Enforcement Points
+
+Every mutation endpoint in `api/mt5.py` calls `check_execution_auth()`:
+
+- `POST /mt5/order` — place order
+- `POST /mt5/partial-close` — close 25/50/75/100%
+- `POST /mt5/modify-sl` — change stop-loss
+- `POST /mt5/move-to-be` — move SL to break-even
+- `POST /mt5/tp1` — combined TP1 action
+- `POST /mt5/tp1/watcher` — start watcher (start only)
+
+Also checked **per tick** inside the TP1 Watcher background thread — if the trader disarms mid-run, the watcher stops executing but keeps monitoring.
+
+---
+
+## 7. Backend API Reference
 
 Base URL: `http://localhost:8000`
 
-### 8.1 Health
+### 7.1 Health & Status
 
-- `GET /health` → `{ "status": "ok" }`
-- `GET /test` → `{ "message": "Hello World" }`
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | `{ "status": "ok" }` |
+| GET | `/mt5/status` | Terminal + account connectivity snapshot |
+| GET | `/mt5/diagnostics` | Python version, MT5 init, terminal/account info |
+| GET | `/mt5/symbols` | All symbols with derived pip/tick/pip_value fields |
 
-### 8.2 Calculation
+### 7.2 Calculation
 
-- `POST /calc` → returns the `RiskCalcOutput` payload plus pip/tick debug fields:
-	- `pip_in_price`, `tick_size`, `tick_value`
-	- `pip_value_per_1_lot` (computed value when available)
-	- `debug` (derivation details)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/calc` | Calculate volume, risk, warnings, and TP1 plan |
+| GET | `/calc/defaults/{symbol}` | Symbol-specific default SL/TP/pip_value |
 
-### 8.3 MT5 status & discovery
+### 7.3 Arming & Execution Control
 
-- `GET /mt5/status` → MT5 terminal/account connectivity snapshot
-- `GET /mt5/diagnostics` → extra environment + MT5 init/last_error info
-- `GET /mt5/symbols` → list of symbols with digits/point + derived pip/tick/pip-value fields
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/mt5/armed` | Current armed state |
+| POST | `/mt5/armed` | Set UI armed state `{ armed: bool }` |
+| POST | `/mt5/execution-enable` | Set backend execution flag `{ armed: bool }` |
 
-### 8.4 Arming & backend execution flag
+### 7.4 Order & Position Operations *(execution-guarded)*
 
-- `GET /mt5/armed` → `{ armed: boolean }`
-- `POST /mt5/armed` body `{ armed: boolean }` → sets stored UI armed state
-- `POST /mt5/execution-enable` body `{ armed: boolean }` → sets backend execution flag
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/mt5/order` | Place market or pending order at POI level |
+| POST | `/mt5/partial-close` | Close 25/50/75/100% of a position |
+| POST | `/mt5/modify-sl` | Modify stop-loss for a position |
+| POST | `/mt5/move-to-be` | Move SL to break-even (entry price) |
+| GET | `/mt5/position/{ticket}` | Resolve a position snapshot |
+| GET | `/mt5/positions` | List open positions (MAGIC-filtered) |
 
-### 8.5 Order & position operations (execution-guarded)
+**Partial close payload:**
+- Preferred: `{ position_ticket, percent, ui_armed }`
+- Legacy: `{ ticket, volume, ui_armed }`
+- Backend normalizes volume to broker step and blocks unsafe closes.
 
-- `POST /mt5/order` → place market/limit order
-- `POST /mt5/partial-close`
-	- Preferred payload: `{ position_ticket, percent, ui_armed }`
-	- Legacy supported: `{ ticket, volume, ui_armed }`
-	- Backend normalizes close volume to broker step and can block unsafe partial closes
-- `POST /mt5/modify-sl` → modify stop-loss for a position
-- `GET /mt5/position/{ticket}` → resolves a position snapshot (position ticket or order ticket)
-- `GET /mt5/positions` → lists open positions owned by this app (magic/comment filtered)
-- `POST /mt5/move-to-be` → move SL to true break-even derived from MT5 position.price_open
-- `POST /mt5/move-sl-to-be` → legacy BE endpoint
+### 7.5 TP1 Management *(execution-guarded)*
 
-### 8.6 TP1 management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/mt5/tp1` | Combined: partial close (50%) + move SL to BE |
+| POST | `/mt5/tp1/watcher` | Start/stop background watcher `{ enabled, ui_armed }` |
+| GET | `/mt5/tp1/watcher/status` | Watcher diagnostics (running, watched positions, last events) |
 
-- `POST /mt5/tp1` → partial close + optional BE move in one call
+### 7.6 WebSocket — Live Data
 
-### 8.7 TP1 watcher (background)
+**Endpoint:** `WS /ws/live`
 
-- `POST /mt5/tp1/watcher` body `{ enabled: boolean, ui_armed: boolean }`
-	- When starting: requires execution authorization
-	- Uses a cross-process file lock (`.tp1_watcher.lock`) to prevent multiple watchers
-- `GET /mt5/tp1/watcher/status` → watcher diagnostics (running, lock owner pid, last events, etc.)
+Client → Server:
 
-## 9) WebSocket live data
+| Message Type | Payload | Action |
+|-------------|---------|--------|
+| `subscribe` | `{ symbol }` | Start tick streaming for symbol |
+| `unsubscribe` | — | Stop tick streaming |
+| `toggle_account` | `{ enabled }` | Start/stop account balance updates |
+| `ping` | — | Keepalive |
 
-- `WS /ws/live`
-	- Client messages:
-		- `{ type: "subscribe", symbol }`
-		- `{ type: "unsubscribe" }`
-		- `{ type: "toggle_account", enabled }`
-	- Server messages:
-		- `{ type: "tick", symbol, bid, ask, spread, time }`
-		- `{ type: "account", balance, equity, margin, free_margin, currency }`
+Server → Client:
 
-REST fallbacks:
+| Message Type | Payload |
+|-------------|---------|
+| `tick` | `{ symbol, bid, ask, spread, time }` |
+| `account` | `{ balance, equity, margin, free_margin, currency }` |
 
-- `GET /live/price/{symbol}`
-- `GET /live/account`
+REST fallbacks: `GET /live/price/{symbol}`, `GET /live/account`
 
-## 10) TP1 watcher behavior (current)
+---
 
-- Runs as a background thread with a cross-process lock.
-- Poll interval and defaults are configured in backend settings:
-	- `tp1_pips_default`, `tp1_percent_default`, `tp1_be_buffer_pips`, `tp1_poll_interval_s`
-- Filters to “app-owned” positions using:
-	- `MAGIC = 123456`
-	- order comment prefix `POI-Tracker`
+## 8. TP1 Watcher — Background Automation
 
-## 11) Configuration
+### 8.1 Purpose
 
-Backend uses `.env` with prefix `MT5_` (via pydantic-settings). Key values:
+Monitors open positions in the background and fires TP1 automatically — the trader doesn't need to watch the screen.
 
-- `MT5_EXECUTION_ENABLED` (default false)
-- `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER` (optional auto-login)
-- `MT5_PATH` (optional MT5 terminal path)
-- `MT5_HOST`, `MT5_PORT`, `MT5_DEBUG`
+### 8.2 Behavior
 
-## 12) Acceptance criteria (current level)
+1. Runs as a **background thread** inside the FastAPI process.
+2. Polls MT5 every **500ms** for position price updates.
+3. Filters to app-owned positions only (`MAGIC = 123456`, comment prefix `POI-Tracker`).
+4. When price reaches TP1 level:
+   - Close 50% of the position.
+   - Move SL to break-even.
+   - Mark the position as "TP1 done".
+5. When a tracked position disappears:
+   - Look up deal history for realized P&L.
+   - Report SL hit event with profit/loss amount.
 
-- Trader can enter a POI-derived entry price and stop distance; the tool calculates the correct lot size.
-- Risk calculation is deterministic/testable and MT5-free.
-- Auto pip derivation is attempted when MT5 is available; falls back to client pip value.
-- Execution is protected by dual authorization (UI armed + backend env flag).
-- Market and pending orders can be placed at POI levels (Order Blocks, FVGs, key levels).
-- MT5 endpoints exist for: status, symbols, orders, partial close, modify SL, BE move, TP1 manage, TP1 watcher.
-- Live data streaming is available via WebSocket and REST fallbacks.
+### 8.3 Safety
+
+- **Cross-process file lock** (`.tp1_watcher.lock`) with PID-based stale detection prevents duplicate watchers.
+- **Dual authorization checked per tick** — disarming the UI stops execution immediately.
+
+### 8.4 Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `tp1_pips_default` | 30.0 | Pips to TP1 |
+| `tp1_percent_default` | 50.0 | % of position to close at TP1 |
+| `tp1_be_buffer_pips` | 0.0 | Buffer pips above BE when moving SL |
+| `tp1_poll_interval_s` | 0.5 | Poll interval in seconds |
+
+---
+
+## 9. Frontend Components
+
+### 9.1 Component Map
+
+| Component | Purpose |
+|-----------|---------|
+| `Calculator.tsx` | Main page — orchestrates the entire trade flow |
+| `InputForm.tsx` | Account, symbol, direction, entry price, stop distance, risk % |
+| `VolumeHero.tsx` | Large lot-size display with READY / CAUTION / BLOCKED status |
+| `WarningBanner.tsx` | Strategy warnings (stop too large, min-lot enforced) |
+| `RiskVisualizer.tsx` | Bar chart comparing target vs actual risk in $ and % |
+| `TradePreview.tsx` | TP1 plan: partial close details, BE price, remaining volume |
+| `ArmedToggle.tsx` | Dual-auth toggle with visual armed / disarmed state |
+| `ExecuteTradeButton.tsx` | Sends order — disabled when not armed or trade not allowed |
+| `PostOrderPanel.tsx` | Trade management: TP1, partial close (25/50/75/100%), BE, close all |
+| `SymbolsPanel.tsx` | Browse MT5 symbols, select favorites, apply as presets |
+| `Toast.tsx` | Notifications for TP1 hit (profit) and SL hit (loss) |
+
+### 9.2 State Management
+
+- **SettingsContext** — persists user settings (risk %, symbol presets) to `localStorage`.
+- **useCalculation** — hook wrapping `POST /calc` with loading/error/result state.
+- **useLiveData** — WebSocket hook with auto-reconnect, provides live bid/ask and account balance.
+
+### 9.3 Live Data Integration
+
+InputForm supports **"Live Balance"** and **"Live Price"** toggles:
+
+- When enabled, fields auto-update from WebSocket data in real time.
+- Fields become read-only (grayed out) to indicate they are streaming.
+
+---
+
+## 10. Configuration
+
+Backend loads `.env` with prefix `MT5_` via pydantic-settings.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MT5_EXECUTION_ENABLED` | `false` | Global execution safety flag |
+| `MT5_LOGIN` | — | MT5 account login (optional auto-login) |
+| `MT5_PASSWORD` | — | MT5 account password |
+| `MT5_SERVER` | — | MT5 broker server name |
+| `MT5_PATH` | — | Path to MT5 terminal executable |
+| `MT5_DEBUG` | `false` | Enable debug logging |
+
+---
+
+## 11. Acceptance Criteria
+
+- [ ] Trader enters a POI entry price and stop distance → tool calculates the correct lot size.
+- [ ] Stop-loss exceeding the max for the instrument shows a warning and **blocks execution**.
+- [ ] Risk calculation uses `Decimal` arithmetic and respects broker `min_volume` and `volume_step`.
+- [ ] UI displays both target and actual risk amounts side by side.
+- [ ] Dual authorization (UI armed + backend flag) is enforced on **all** execution endpoints.
+- [ ] Market and pending orders can be placed at POI levels.
+- [ ] TP1 auto-fires at +30 pips (XAUUSD) / +300 pips (BTCUSD): closes 50%, moves SL to BE.
+- [ ] TP1 can also be triggered manually via the PostOrderPanel button.
+- [ ] Manual partial close available at **25%, 50%, 75%, 100%** at any time while a position is open.
+- [ ] Partial close respects `volume_step` and blocks unsafe closes (remainder < `min_lot`).
+- [ ] TP1 Watcher runs in background with cross-process lock and per-tick auth check.
+- [ ] Toast notifications display on TP1 hit (profit taken) and SL hit (loss realized).
+- [ ] Live price and account data stream via WebSocket with auto-reconnect.
+- [ ] Pip value is auto-derived from MT5; falls back to client-provided value when unavailable.
