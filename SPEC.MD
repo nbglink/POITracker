@@ -8,7 +8,7 @@ Last updated: 2026-02-18
 
 ### 1.1 What This Tool Does
 
-A local Windows application for **POI-based trading**. Traders analyze their charts in MetaTrader 5, identify Points of Interest (Fair Value Gaps, Order Blocks, liquidity sweeps, supply/demand zones), and use this tool to:
+A local Windows application for **POI-based trading**. Traders analyze their charts in MetaTrader 5/TradingView, identify Points of Interest (Fair Value Gaps, Order Blocks, liquidity sweeps, supply/demand zones), and use this tool to:
 
 1. **Calculate** the correct lot size for a given risk percentage and stop distance.
 2. **Place** market or pending orders at POI levels with proper risk management.
