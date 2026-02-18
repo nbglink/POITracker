@@ -1,46 +1,20 @@
-MT5 Risk-Based Trade Planner & Executor — SPECIFICATION
-1. Purpose
-Design and implement a local Windows application that:
+# MT5 Risk-Based POI Trade Planner & Executor — SPECIFICATION
 
-
-Calculates trade volume (lot size) based on a defined risk percentage.
-
-
-Applies configurable rules for stop distance, partial close, and break-even management.
-
-
-Respects broker constraints (minimum lot 0.01).
-
-
-Allows real BUY/SELL order execution in MetaTrader 5 (MT5) directly from the application.
-
-
-Displays the difference between target risk and actual risk when minimum lot constraints increase exposure.
-
-
-Primary instruments:
-
-
-XAUUSD
-
-
-BTCUSD
-
-
-Secondary:
-MT5 Risk-Based Trade Planner & Executor — SPECIFICATION
-
-Last updated: 2026-02-08
+Last updated: 2026-02-18
 
 ## 1) Purpose
 
-Build a local Windows application that:
+Build a local Windows application for **POI-based trading** (Points of Interest).
 
-- Calculates risk-based volume (lot size) from account balance, risk %, and stop distance.
-- Shows target risk vs actual risk (actual can exceed target when min lot is enforced).
-- Optionally executes and manages real trades in MetaTrader 5 via the MT5 Python API.
-- Provides TP1 management (partial close + optional move to break-even) and a background TP1 watcher.
-- Streams live ticks/account data to the UI via WebSocket.
+Traders identify key levels on their MT5 charts — Fair Value Gaps (FVGs), Order Blocks, liquidity sweeps, supply/demand zones — and use this tool to place orders at those levels with automatically calculated, risk-managed lot sizes.
+
+The tool does **not** detect POIs. The trader performs the analysis; this tool handles:
+
+- Calculating risk-based volume (lot size) from account balance, risk %, and stop distance to the POI.
+- Showing target risk vs actual risk (actual can exceed target when min lot is enforced).
+- Placing market or pending orders at POI entry prices via the MT5 Python API.
+- TP1 management (partial close + optional move to break-even) and a background TP1 watcher.
+- Streaming live ticks/account data to the UI via WebSocket for real-time POI proximity awareness.
 
 Primary instruments: XAUUSD, BTCUSD, common Forex pairs.
 
@@ -50,11 +24,13 @@ Frontend (React/Vite) → Backend (FastAPI) → MT5 terminal (Windows)
 
 Typical flow:
 
-1) User enters trade parameters.
-2) UI calls `POST /calc` to compute volume + risk and show warnings.
-3) User optionally arms execution and confirms.
-4) UI calls MT5 endpoints to place/manage orders.
-5) UI can subscribe to live tick/account updates via WebSocket.
+1) Trader identifies a POI (FVG, Order Block, supply/demand zone) on the MT5 chart.
+2) Trader enters the entry price, stop distance, and risk % into the UI.
+3) UI calls `POST /calc` to compute volume + risk and show warnings.
+4) Trader optionally arms execution and confirms the order.
+5) UI calls MT5 endpoints to place a market or pending order at the POI level.
+6) Post-order management: TP1 partial close, move SL to break-even, background watcher.
+7) UI subscribes to live tick/account updates via WebSocket for real-time monitoring.
 
 ## 3) Technology stack
 
@@ -240,8 +216,10 @@ Backend uses `.env` with prefix `MT5_` (via pydantic-settings). Key values:
 
 ## 12) Acceptance criteria (current level)
 
+- Trader can enter a POI-derived entry price and stop distance; the tool calculates the correct lot size.
 - Risk calculation is deterministic/testable and MT5-free.
 - Auto pip derivation is attempted when MT5 is available; falls back to client pip value.
 - Execution is protected by dual authorization (UI armed + backend env flag).
+- Market and pending orders can be placed at POI levels (Order Blocks, FVGs, key levels).
 - MT5 endpoints exist for: status, symbols, orders, partial close, modify SL, BE move, TP1 manage, TP1 watcher.
 - Live data streaming is available via WebSocket and REST fallbacks.
