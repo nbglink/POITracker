@@ -77,15 +77,22 @@ export function PostOrderPanel({
     getPosition(positionTicket)
       .then((res) => {
         if (!isMounted) return;
-        if (res.success && res.position) setPosition(res.position);
-        else onActionComplete('position', false, res.error || 'Failed to resolve position');
+        if (res.success && res.position) {
+          setPosition(res.position);
+        } else {
+          // Position not found — log warning instead of error toast.
+          // This can happen briefly before the polling loop removes the card.
+          console.warn(`[PostOrderPanel] Position ${positionTicket}: ${res.error}`);
+          setPosition(null);
+        }
       })
       .catch((e) => {
         if (!isMounted) return;
-        onActionComplete('position', false, e instanceof Error ? e.message : 'Network error');
+        console.warn(`[PostOrderPanel] Failed to resolve position ${positionTicket}:`, e);
+        setPosition(null);
       });
     return () => { isMounted = false; };
-  }, [positionTicket, onActionComplete]);
+  }, [positionTicket]);
 
   const tp1Price = useMemo(() => {
     if (!position || tp1Pips == null) return null;
@@ -125,9 +132,17 @@ export function PostOrderPanel({
     });
   };
 
-  // Toggle backend watcher when Auto TP1 checkbox changes
+  // Toggle backend watcher when Auto TP1 checkbox or armed state changes
   useEffect(() => {
-    if (!armed || positionTicket == null) return;
+    if (positionTicket == null) return;
+
+    // If not armed, ensure watcher is stopped and knows armed=false
+    if (!armed) {
+      setTP1Watcher(false, false)
+        .then(() => setWatcherStatus('Disarmed — watcher paused'))
+        .catch(() => setWatcherStatus('Watcher sync failed'));
+      return;
+    }
 
     setTP1Watcher(autoTp1Enabled, armed)
       .then((res) => {
@@ -164,11 +179,22 @@ export function PostOrderPanel({
         const status = await getTP1WatcherStatus();
 
         if (status.running) {
-          setWatcherStatus(
-            status.tp1_done_count > 0
-              ? `Watcher active · ${status.tp1_done_count} TP1(s) done`
-              : `Watcher active · watching ${status.watched_positions} position(s)`
-          );
+          const st = status as any;
+          const mt5Ok = st.mt5_connected !== false;
+          const watcherArmed = st.ui_armed !== false;
+
+          if (!mt5Ok) {
+            const fails = st.consecutive_connect_failures ?? 0;
+            setWatcherStatus(`Watcher active · MT5 disconnected (${fails} ticks)`);
+          } else if (!watcherArmed) {
+            setWatcherStatus('Watcher active · ⚠ armed desync — toggle armed');
+          } else {
+            setWatcherStatus(
+              status.tp1_done_count > 0
+                ? `Watcher active · ${status.tp1_done_count} TP1(s) done`
+                : `Watcher active · watching ${status.watched_positions} position(s)`
+            );
+          }
         } else {
           setWatcherStatus('Watcher stopped');
         }

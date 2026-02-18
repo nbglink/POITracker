@@ -12,6 +12,7 @@ import { SymbolsPanel } from '../components/SymbolsPanel';
 import { useCalculation } from '../hooks/useCalculation';
 import { useSettings } from '../context/SettingsContext';
 import { RiskCalcInput, CalculatorFormState } from '../types/trade';
+import { getSymbolDefaults } from '../utils/symbolDefaults';
 import { getPositions } from '../api/mt5';
 import type { OpenPositionInfo } from '../types';
 
@@ -55,6 +56,12 @@ export function Calculator() {
           const byTicket = new Set(positions.map((p) => p.ticket));
           const next: ManagedTrade[] = [];
 
+          // Collect tickets already claimed by resolved trades to avoid
+          // matching the same position to multiple trade cards (hedging fix)
+          const claimedTickets = new Set(
+            prev.filter((x) => x.position_ticket != null).map((x) => x.position_ticket)
+          );
+
           for (const t of prev) {
             // Auto-remove unresolved pending fills after 60s.
             if (t.position_ticket == null && now - t.created_at > 60_000) {
@@ -74,8 +81,11 @@ export function Calculator() {
               .filter((p) => p.magic === MAGIC && p.symbol === t.symbol && p.type === wantType)
               .sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
 
-            if (matches.length > 0) {
-              next.push({ ...t, position_ticket: matches[0].ticket });
+            // Pick first match not already claimed by another trade
+            const match = matches.find((m) => !claimedTickets.has(m.ticket));
+            if (match) {
+              claimedTickets.add(match.ticket);
+              next.push({ ...t, position_ticket: match.ticket });
             } else {
               next.push(t);
             }
@@ -106,6 +116,7 @@ export function Calculator() {
   const handleCalculate = useCallback(
     async (formData: CalculatorFormState) => {
       setLastFormData(formData);
+      const symDefaults = getSymbolDefaults(formData.symbol);
       const input: RiskCalcInput = {
         account_balance: parseFloat(formData.account_balance),
         risk_percent: parseFloat(formData.risk_percent),
@@ -113,8 +124,8 @@ export function Calculator() {
         direction: formData.direction,
         entry_price: parseFloat(formData.entry_price),
         stop_pips: parseFloat(formData.stop_pips),
-        max_stop_pips: settings.max_stop_pips,
-        tp1_pips: settings.tp1_pips,
+        max_stop_pips: symDefaults.max_stop_pips,
+        tp1_pips: parseFloat(formData.tp1_pips),
         partial_percent: settings.partial_percent,
         move_to_be_enabled: settings.move_to_be_enabled,
         be_buffer_pips: settings.be_buffer_pips,

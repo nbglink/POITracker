@@ -186,6 +186,8 @@ async def mt5_diagnostics():
 async def set_armed_status(request: ArmedStatusRequest):
     """Set armed status. Expects JSON body: {"armed": true/false}"""
     execution_guard.toggle(request.armed)
+    # Keep TP1 watcher in sync with current armed state
+    tp1_watcher.set_ui_armed(request.armed)
     return {"armed": request.armed}
 
 

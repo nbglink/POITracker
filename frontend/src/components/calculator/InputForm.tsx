@@ -6,6 +6,7 @@ import { CalculatorFormState, TradeDirection } from '../../types/trade';
 import { useSettings } from '../../context/SettingsContext';
 import { useLiveData } from '../../hooks/useLiveData';
 import { formatPipValue } from '../../utils/formatters';
+import { getSymbolDefaults, isDefaultValue } from '../../utils/symbolDefaults';
 
 interface InputFormProps {
   onCalculate: (formData: CalculatorFormState) => void;
@@ -42,6 +43,21 @@ export function InputForm({ onCalculate, loading }: InputFormProps) {
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.active_symbol, settings.symbol_presets]);
+
+  // Auto-update SL/TP defaults when symbol changes (only if user hasn't customized them)
+  useEffect(() => {
+    if (!settings.active_symbol) return;
+    const defaults = getSymbolDefaults(settings.active_symbol);
+    setFormData((prev) => ({
+      ...prev,
+      stop_pips: isDefaultValue(parseFloat(prev.stop_pips))
+        ? defaults.stop_loss_pips.toString()
+        : prev.stop_pips,
+      tp1_pips: isDefaultValue(parseFloat(prev.tp1_pips))
+        ? defaults.take_profit_pips.toString()
+        : prev.tp1_pips,
+    }));
+  }, [settings.active_symbol]);
 
   // Live data hook
   const { tick, account, connected } = useLiveData({

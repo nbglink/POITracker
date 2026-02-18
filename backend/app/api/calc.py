@@ -2,13 +2,28 @@
 Risk calculation API endpoint.
 
 POST /calc - Calculate trade volume and risk based on input parameters.
+GET  /calc/defaults/{symbol} - Return symbol-aware default SL/TP pips.
 """
 from fastapi import APIRouter, HTTPException
 from app.models import RiskCalcInput
 from app.services.risk_engine import risk_engine
 from app.services.pip_specs import pip_spec_from_mt5
+from app.services.symbol_defaults import get_symbol_defaults
 
 router = APIRouter()
+
+
+@router.get("/calc/defaults/{symbol}")
+async def get_defaults(symbol: str):
+    """Return symbol-aware default SL/TP pips and pip_value."""
+    defaults = get_symbol_defaults(symbol)
+    return {
+        "symbol": symbol,
+        "stop_loss_pips": defaults.stop_loss_pips,
+        "take_profit_pips": defaults.take_profit_pips,
+        "max_stop_pips": defaults.max_stop_pips,
+        "pip_value_per_1_lot": defaults.pip_value_per_1_lot,
+    }
 
 
 @router.post("/calc")

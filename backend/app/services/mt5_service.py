@@ -319,25 +319,49 @@ class MT5Service:
         """Resolve newest open position ticket by (symbol, side, MAGIC).
 
         Hedging accounts can have multiple positions per symbol, so we pick the newest.
+        Falls back to deal history if no open position matches (fast fill + close).
         """
         if not self._ensure_connected():
             return None
 
         positions = mt5.positions_get(symbol=symbol)
-        if not positions:
-            return None
-
         want_type = mt5.POSITION_TYPE_BUY if direction == TradeDirection.BUY else mt5.POSITION_TYPE_SELL
-        filtered = [
-            p
-            for p in positions
-            if int(getattr(p, "magic", 0) or 0) == MAGIC and int(getattr(p, "type", -1)) == int(want_type)
-        ]
-        if not filtered:
-            return None
 
-        newest = max(filtered, key=lambda p: int(getattr(p, "time", 0) or 0))
-        return int(getattr(newest, "ticket"))
+        if positions:
+            filtered = [
+                p
+                for p in positions
+                if int(getattr(p, "magic", 0) or 0) == MAGIC and int(getattr(p, "type", -1)) == int(want_type)
+            ]
+            if filtered:
+                newest = max(filtered, key=lambda p: int(getattr(p, "time", 0) or 0))
+                return int(getattr(newest, "ticket"))
+
+        # Fallback: check deal history for recently opened positions (last 60s)
+        # Covers fast-fill-and-close scenarios where the position is already gone
+        try:
+            now = datetime.now()
+            start = now - timedelta(seconds=60)
+            deals = mt5.history_deals_get(start, now)
+            if deals:
+                matching = [
+                    d for d in deals
+                    if str(getattr(d, "symbol", "")) == symbol
+                    and int(getattr(d, "magic", 0) or 0) == MAGIC
+                    and getattr(d, "entry", -1) == 0  # DEAL_ENTRY_IN
+                ]
+                if matching:
+                    matching.sort(
+                        key=lambda d: int(getattr(d, "time_msc", 0) or getattr(d, "time", 0) or 0),
+                        reverse=True,
+                    )
+                    pos_id = getattr(matching[0], "position_id", None)
+                    if pos_id:
+                        return int(pos_id)
+        except Exception:
+            pass
+
+        return None
 
     def move_sl_to_be(self, request: MoveSLToBERequest) -> OrderResponse:
         if not self._ensure_connected():
@@ -908,6 +932,8 @@ class TP1WatcherManager:
         self._last_tp1_event: Optional[Dict[str, Any]] = None
         self._last_sl_event: Optional[Dict[str, Any]] = None
         self._tracked_positions: Dict[int, Dict[str, Any]] = {}
+        self._consecutive_connect_failures: int = 0
+        self._MAX_CONNECT_FAILURES_LOG: int = 30  # log error after ~15s at 0.5s poll
 
     def start(self, ui_armed: bool) -> dict:
         """Start the watcher if not already running and lock acquired."""
@@ -934,13 +960,30 @@ class TP1WatcherManager:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
         self._running = False
-        self._lock.release()
+        self._consecutive_connect_failures = 0
+        try:
+            self._lock.release()
+        except Exception:
+            pass
         return {"running": False, "locked": False}
 
     def status(self) -> dict:
         lock_info = self._lock.read_info()
+        thread_alive = self._thread is not None and self._thread.is_alive()
+        actually_running = self._running and thread_alive
+
+        # Auto-cleanup: if we think we're running but thread died, fix the state
+        if self._running and not thread_alive:
+            logger.warning("TP1 watcher thread died unexpectedly, cleaning up")
+            self._running = False
+            self._consecutive_connect_failures = 0
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+
         return {
-            "running": self._running and self._thread is not None and self._thread.is_alive(),
+            "running": actually_running,
             "lock_owner_pid": int(lock_info["pid"]) if lock_info and "pid" in lock_info else None,
             "lock_age_seconds": round(time.time() - lock_info["ts"], 1) if lock_info and "ts" in lock_info else None,
             "watched_positions": len([k for k, v in self._tp1_done.items() if not v]),
@@ -948,6 +991,9 @@ class TP1WatcherManager:
             "last_error": self._last_error,
             "last_tp1_event": self._last_tp1_event,
             "last_sl_event": self._last_sl_event,
+            "mt5_connected": self._consecutive_connect_failures == 0,
+            "consecutive_connect_failures": self._consecutive_connect_failures,
+            "ui_armed": self._ui_armed,
         }
 
     def set_ui_armed(self, armed: bool):
@@ -975,9 +1021,16 @@ class TP1WatcherManager:
                     logger.exception("TP1 watcher tick error: %s", exc)
 
                 self._stop_event.wait(poll_s)
+        except Exception as exc:
+            self._last_error = f"Watcher loop crashed: {exc}"
+            logger.exception("TP1 watcher loop crashed: %s", exc)
         finally:
             self._running = False
-            self._lock.release()
+            self._consecutive_connect_failures = 0
+            try:
+                self._lock.release()
+            except Exception:
+                pass
             logger.info("TP1 watcher stopped")
 
     @staticmethod
@@ -1015,7 +1068,16 @@ class TP1WatcherManager:
 
     def _tick(self, execution_guard, tp1_pips: float, tp1_percent: float, be_buffer: float):
         if not mt5_service._ensure_connected():
+            self._consecutive_connect_failures += 1
+            if self._consecutive_connect_failures == 1 or self._consecutive_connect_failures % self._MAX_CONNECT_FAILURES_LOG == 0:
+                self._last_error = f"MT5 disconnected for {self._consecutive_connect_failures} consecutive ticks"
+                logger.error("TP1 watcher: MT5 unreachable for %d consecutive ticks", self._consecutive_connect_failures)
             return
+
+        # Connection restored — reset counter
+        if self._consecutive_connect_failures > 0:
+            logger.info("TP1 watcher: MT5 connection restored after %d failed ticks", self._consecutive_connect_failures)
+            self._consecutive_connect_failures = 0
 
         positions = mt5.positions_get()
         if not positions:
