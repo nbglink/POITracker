@@ -1,6 +1,6 @@
-fastapi
-uvicorn
-pydantic
-pydantic-settings
-MetaTrader5
-python-dotenv
+fastapi==0.128.0
+uvicorn==0.40.0
+pydantic==2.12.5
+pydantic-settings==2.12.0
+MetaTrader5==5.0.5572
+python-dotenv==1.2.1

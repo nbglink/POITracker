@@ -10,6 +10,7 @@ import { PostOrderPanel } from '../components/PostOrderPanel';
 import { Toast } from '../components/Toast';
 import { SymbolsPanel } from '../components/SymbolsPanel';
 import { useCalculation } from '../hooks/useCalculation';
+import { useLiveData } from '../hooks/useLiveData';
 import { useSettings } from '../context/SettingsContext';
 import { RiskCalcInput, CalculatorFormState } from '../types/trade';
 import { getSymbolDefaults } from '../utils/symbolDefaults';
@@ -28,8 +29,28 @@ type ManagedTrade = {
 const MAGIC = 123456;
 
 export function Calculator() {
-  const { settings } = useSettings();
+  const { settings, updateSettings } = useSettings();
   const { result, loading, error, calculate } = useCalculation();
+  // Subscribe to account-only updates so we can label risk amounts in the
+  // correct account currency (EUR/USD/etc) instead of hardcoded "$".
+  const { account } = useLiveData({ enablePrice: false, enableAccount: true });
+
+  // After each successful /calc, sync the active symbol's preset pip value to
+  // whatever the backend actually used. This keeps the form display ("Pip
+  // Value per Lot") consistent with the value used in the math (the backend
+  // overrides the input when MT5 has authoritative tick specs).
+  useEffect(() => {
+    if (!result || !settings.active_symbol) return;
+    const computed = result.pip_value_per_1_lot;
+    if (typeof computed !== 'number' || computed <= 0) return;
+    const preset = settings.symbol_presets.find((p) => p.symbol === settings.active_symbol);
+    if (!preset) return;
+    if (Math.abs(preset.pip_value_per_1_lot - computed) < 1e-6) return;
+    const updated = settings.symbol_presets.map((p) =>
+      p.symbol === settings.active_symbol ? { ...p, pip_value_per_1_lot: computed } : p,
+    );
+    updateSettings({ symbol_presets: updated });
+  }, [result, settings.active_symbol, settings.symbol_presets, updateSettings]);
 
   // Trading state
   const [armed, setArmed] = useState(false);
@@ -163,7 +184,10 @@ export function Calculator() {
 
         {showSymbols && (
           <div className="mb-6">
-            <SymbolsPanel onApply={(n) => showToast(`Applied ${n} symbols`, 'success')} />
+            <SymbolsPanel
+              onApply={(n) => showToast(`Applied ${n} symbols`, 'success')}
+              onError={(msg) => showToast(msg, 'error')}
+            />
           </div>
         )}
 
@@ -198,6 +222,7 @@ export function Calculator() {
                   actualRiskPercent={result.actual_risk_percent}
                   targetRiskAmount={result.target_risk_amount}
                   actualRiskAmount={result.actual_risk_amount}
+                  currency={account?.currency}
                 />
 
                 {/* Trade management preview */}

@@ -10,15 +10,15 @@ import MetaTrader5 as mt5
 router = APIRouter()
 
 
-async def get_live_price(symbol: str) -> dict:
-    """Get current bid/ask price for a symbol."""
+def _fetch_tick_sync(symbol: str) -> dict:
+    """Blocking MT5 tick fetch. Run via asyncio.to_thread()."""
     if not mt5.initialize():
         return {"error": "MT5 not initialized", "symbol": symbol}
-    
+
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         return {"error": f"Symbol {symbol} not found", "symbol": symbol}
-    
+
     return {
         "symbol": symbol,
         "bid": tick.bid,
@@ -28,15 +28,15 @@ async def get_live_price(symbol: str) -> dict:
     }
 
 
-async def get_account_balance() -> dict:
-    """Get current account balance and equity."""
+def _fetch_account_sync() -> dict:
+    """Blocking MT5 account fetch. Run via asyncio.to_thread()."""
     if not mt5.initialize():
         return {"error": "MT5 not initialized"}
-    
+
     account = mt5.account_info()
     if account is None:
         return {"error": "Account info not available"}
-    
+
     return {
         "balance": account.balance,
         "equity": account.equity,
@@ -44,6 +44,16 @@ async def get_account_balance() -> dict:
         "free_margin": account.margin_free,
         "currency": account.currency,
     }
+
+
+async def get_live_price(symbol: str) -> dict:
+    """Get current bid/ask price for a symbol (off-loop)."""
+    return await asyncio.to_thread(_fetch_tick_sync, symbol)
+
+
+async def get_account_balance() -> dict:
+    """Get current account balance and equity (off-loop)."""
+    return await asyncio.to_thread(_fetch_account_sync)
 
 
 @router.websocket("/ws/live")

@@ -64,12 +64,18 @@ class ArmedStatusRequest(BaseModel):
 
 
 class OrderRequest(BaseModel):
-    """Request to place a market or limit order."""
+    """Request to place a market or limit order.
+
+    For market orders prefer ``stop_pips`` over ``sl_price`` so the backend can
+    anchor the stop to the broker's actual fill price rather than a frontend
+    snapshot that goes stale across the spread.
+    """
     symbol: str = Field(..., description="Trading symbol")
     direction: TradeDirection = Field(..., description="Trade direction")
     volume: float = Field(..., gt=0, description="Order volume")
     price: Optional[float] = Field(None, description="Limit order price (None for market)")
-    sl_price: Optional[float] = Field(None, description="Stop loss price")
+    sl_price: Optional[float] = Field(None, description="Stop loss price (absolute, used as-is if provided)")
+    stop_pips: Optional[float] = Field(None, gt=0, description="Stop distance in pips; backend derives SL from fill price")
     tp_price: Optional[float] = Field(None, description="Take profit price")
     ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
 
@@ -205,9 +211,18 @@ class TP1ManageResponse(BaseModel):
 
 
 class TP1WatcherRequest(BaseModel):
-    """Request to start/stop the backend TP1 watcher."""
+    """Request to start/stop the backend TP1 watcher.
+
+    The optional override fields let the caller (the UI) pin the watcher to the
+    same TP1 distance / partial percent shown in the trade-management preview,
+    instead of falling back to the global ``tp1_pips_default`` config value
+    (which is symbol-agnostic and disagrees with per-symbol UI defaults).
+    """
     enabled: bool = Field(..., description="True to start, False to stop")
     ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
+    tp1_pips: Optional[float] = Field(None, gt=0, description="TP1 trigger distance in pips (overrides config default)")
+    tp1_percent: Optional[float] = Field(None, gt=0, le=100, description="Partial-close percentage at TP1 (overrides config default)")
+    be_buffer_pips: Optional[float] = Field(None, ge=0, description="Pips of buffer on SL when moving to BE (overrides config default)")
 
 
 class TP1WatcherResponse(BaseModel):

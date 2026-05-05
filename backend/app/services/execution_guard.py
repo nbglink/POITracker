@@ -20,19 +20,15 @@ class ExecutionGuard:
         """
         Check if execution is allowed based on dual authorization.
 
-        Args:
-            ui_armed: Whether the UI "ARMED" toggle is enabled
-
-        Returns:
-            Tuple of (allowed: bool, reason: str)
+        The ``ui_armed`` flag MUST be supplied explicitly by the caller —
+        we never fall back to the stored ``_ui_armed`` state. The dual-auth
+        guarantee is "this specific request was placed with the UI armed",
+        not "the UI was armed at some point in the past".
         """
-        # Check backend flag
         if not settings.execution_enabled:
             return False, "Backend execution is disabled (EXECUTION_ENABLED=false)"
 
-        # Check UI flag (use stored state if not provided)
-        ui_check = ui_armed if ui_armed else self._ui_armed
-        if not ui_check:
+        if not ui_armed:
             return False, "UI is not armed (ARMED toggle disabled)"
 
         return True, "Execution authorized"

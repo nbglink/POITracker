@@ -4,8 +4,9 @@ Risk calculation engine.
 Pure calculation logic with no MT5 dependencies - fully testable.
 """
 from app.models import RiskCalcInput, RiskCalcOutput
+from app.services.volume_normalizer import ceil_min_to_step, normalize_volume
 
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, ROUND_DOWN
 
 
 class RiskEngine:
@@ -17,10 +18,8 @@ class RiskEngine:
 
         Formula: volume = target_risk_amount / (stop_pips * pip_value_per_1_lot)
         """
-        # Calculate target risk amount
         target_risk_amount = input_data.account_balance * input_data.risk_percent / 100
 
-        # Calculate raw volume
         pip_value = input_data.pip_value_per_1_lot
         stop_pips = input_data.stop_pips
 
@@ -29,27 +28,14 @@ class RiskEngine:
         else:
             volume_raw = target_risk_amount / (stop_pips * pip_value)
 
-        # Apply broker constraints (floor to volume_step, enforce minimum)
-        # Use Decimal to avoid float step/rounding bugs.
         volume_step = input_data.volume_step
         min_volume = input_data.min_volume
 
-        if volume_step <= 0:
-            step = Decimal("0.01")
-            stepped = Decimal("0")
-        else:
-            step = Decimal(str(volume_step))
-            raw = Decimal(str(volume_raw))
-            stepped = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
+        # Step-floor the raw volume; if below broker min, snap up to the
+        # step-aligned minimum. Shared with mt5_service via volume_normalizer.
+        volume = normalize_volume(volume_raw, volume_step, min_volume)
+        min_valid = ceil_min_to_step(min_volume, volume_step) if volume_step > 0 else min_volume
 
-        # Ensure min volume respects step sizing (ceil min_volume to a valid step)
-        min_d = Decimal(str(min_volume))
-        min_valid = (min_d / step).to_integral_value(rounding=ROUND_UP) * step
-
-        volume_d = stepped if stepped > min_valid else min_valid
-        volume_d = (volume_d / step).to_integral_value(rounding=ROUND_DOWN) * step
-
-        volume = float(volume_d)
         volume_raw = float(Decimal(str(volume_raw)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN))
 
         # Calculate actual risk with final volume

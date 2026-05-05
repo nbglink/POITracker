@@ -41,6 +41,11 @@ export interface RiskCalcOutput {
   remaining_volume: number;
   be_sl_price: number | null;
   warnings: string[];
+  /** Backend-merged metadata: the pip value the calc actually used (MT5-derived when available). */
+  pip_value_per_1_lot?: number | null;
+  pip_in_price?: number | null;
+  tick_size?: number | null;
+  tick_value?: number | null;
 }
 
 /**

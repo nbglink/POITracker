@@ -10,6 +10,7 @@ venv/
 ENV/
 .env
 .env.*
+!.env.example
 
 # Node / Vite
 node_modules/
@@ -25,6 +26,15 @@ Thumbs.db
 
 # Local tooling
 .agents/
+.claude/
+.playwright-mcp/
+
+# Test/exploration artifacts (Playwright screenshots, etc.)
+btc-*.png
+fixes-*.png
+poi-tracker-*.png
 
 # MT5 local artifacts (if any)
-*.log
+# Runtime locks (TP1 watcher, etc.) — must never be tracked
+*.lock
+backend/.tp1_watcher.lock

@@ -22,14 +22,19 @@ export interface MT5Status {
 }
 
 /**
- * Order request for MT5 execution
+ * Order request for MT5 execution.
+ *
+ * For market orders prefer `stop_pips` so the backend anchors SL to the
+ * actual fill price. `sl_price` is for pending orders (where the fill price
+ * is the configured price).
  */
 export interface OrderRequest {
   symbol: string;
   direction: 'buy' | 'sell';
   volume: number;
   price: number | null;
-  sl_price: number;
+  sl_price: number | null;
+  stop_pips?: number;
   tp_price: number | null;
   ui_armed: boolean;
 }
@@ -146,4 +151,45 @@ export interface TP1ManageResponse {
   closed_volume_normalized: number | null;
   sl_price_set: number | null;
   error: string | null;
+}
+
+export interface TP1WatcherSetResponse {
+  running: boolean;
+  locked: boolean;
+  pid?: number;
+  reason?: string;
+  message?: string;
+}
+
+export interface TP1WatcherEvent {
+  ticket: number;
+  symbol: string;
+  direction: string;
+  timestamp: number;
+  profit_money: number | null;
+  /** TP1 only */
+  entry?: number;
+  tp1_price?: number;
+  close_price?: number;
+  close_volume?: number;
+  pips_profit?: number;
+  be_status?: string;
+  /** SL only */
+  sl_price?: number;
+  volume?: number;
+  pips_loss?: number;
+}
+
+export interface TP1WatcherStatus {
+  running: boolean;
+  lock_owner_pid: number | null;
+  lock_age_seconds: number | null;
+  watched_positions: number;
+  tp1_done_count: number;
+  last_error: string | null;
+  last_tp1_event: TP1WatcherEvent | null;
+  last_sl_event: TP1WatcherEvent | null;
+  mt5_connected: boolean;
+  consecutive_connect_failures: number;
+  ui_armed: boolean;
 }

@@ -5,6 +5,7 @@ on:
   pull_request:
 
 jobs:
+  # Backend runs on Windows because MetaTrader5 is a Windows-only C-extension.
   backend:
     runs-on: windows-latest
     defaults:
@@ -19,13 +20,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Syntax check (compile)
         run: python -m compileall app
 
       - name: Import smoke test
         run: python -c "from app.services.risk_engine import risk_engine; print('risk_engine ok')"
+
+      - name: Run unit tests
+        run: python -m pytest
 
   frontend:
     runs-on: ubuntu-latest
@@ -44,6 +48,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Lint
+        run: npm run lint
 
       - name: Build
         run: npm run build

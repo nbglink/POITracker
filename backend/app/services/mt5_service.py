@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.config import settings
 from app.services.pip_specs import pip_in_price_for_symbol
+from app.services.volume_normalizer import floor_to_step
 from decimal import Decimal, ROUND_FLOOR
 from datetime import datetime, timedelta
 
@@ -139,35 +140,23 @@ class MT5Service:
         return (volume_min, volume_step, volume_max)
 
     def _normalize_volume_floor(self, requested: float, volume_min: float, volume_step: float, volume_max: float) -> float:
-        """Normalize volume by flooring to broker step; returns 0.0 if below min."""
+        """Normalize volume by flooring to broker step; returns 0.0 if below min.
+
+        Wraps :func:`volume_normalizer.floor_to_step`. Returns 0 when the floored
+        result would fall under ``volume_min`` (broker would reject the order).
+        """
         if requested <= 0 or volume_min <= 0 or volume_step <= 0:
             return 0.0
 
-        req = Decimal(str(requested))
-        vmin = Decimal(str(volume_min))
-        vstep = Decimal(str(volume_step))
-        vmax = Decimal(str(volume_max)) if volume_max and volume_max > 0 else None
-
-        if req < vmin:
+        normalized = floor_to_step(requested, volume_step)
+        if normalized < volume_min:
             return 0.0
-
-        steps = (req / vstep).to_integral_value(rounding=ROUND_FLOOR)
-        normalized = steps * vstep
-
-        if normalized < vmin:
-            return 0.0
-        if vmax is not None and normalized > vmax:
-            normalized = vmax
-
-        return float(normalized)
+        if volume_max and volume_max > 0 and normalized > volume_max:
+            normalized = volume_max
+        return normalized
 
     def _floor_to_step(self, value: float, step: float) -> float:
-        if step <= 0:
-            return 0.0
-        v = Decimal(str(value))
-        s = Decimal(str(step))
-        steps = (v / s).to_integral_value(rounding=ROUND_FLOOR)
-        return float(steps * s)
+        return floor_to_step(value, step)
 
     def normalize_close_volume(self, symbol: str, position_volume: float, percent: float) -> Dict[str, Any]:
         """Compute broker-safe close volume for a partial close.
@@ -722,15 +711,29 @@ class MT5Service:
                 current = float(tick.bid)
                 order_type = mt5.ORDER_TYPE_SELL_STOP if float(request.price) <= current else mt5.ORDER_TYPE_SELL_LIMIT
 
-        # Prepare the order
+        # Decide SL strategy. Market orders with stop_pips defer SL to a
+        # post-fill modify so the stop is anchored to the broker's actual fill
+        # price (not a stale frontend snapshot).
+        post_fill_sl = (not is_pending) and request.stop_pips is not None and request.stop_pips > 0
+
+        # For pending orders we can compute SL up-front from the configured price.
         if is_pending:
             action = mt5.TRADE_ACTION_PENDING
-            price = float(request.price)  # required for pending orders
+            price = float(request.price)
             filling = mt5.ORDER_FILLING_RETURN
+            initial_sl = request.sl_price
+            if initial_sl is None and request.stop_pips and request.stop_pips > 0:
+                digits = int(getattr(symbol_info, "digits", 5) or 5)
+                pip_in_price = float(pip_in_price_for_symbol(request.symbol, digits))
+                if request.direction.value == "buy":
+                    initial_sl = round(price - request.stop_pips * pip_in_price, digits)
+                else:
+                    initial_sl = round(price + request.stop_pips * pip_in_price, digits)
         else:
             action = mt5.TRADE_ACTION_DEAL
             price = float(symbol_info.ask) if request.direction.value == "buy" else float(symbol_info.bid)
             filling = mt5.ORDER_FILLING_IOC
+            initial_sl = None if post_fill_sl else request.sl_price
 
         order_request = {
             "action": action,
@@ -738,16 +741,15 @@ class MT5Service:
             "volume": request.volume,
             "type": order_type,
             "price": price,
-            "sl": request.sl_price,
+            "sl": initial_sl if initial_sl is not None else 0.0,
             "tp": 0.0,  # TP1 is internal — never set broker-side TP
-            "deviation": 10,  # Allow 10 points deviation
-            "magic": MAGIC,  # Magic number for order identification
+            "deviation": 10,
+            "magic": MAGIC,
             "comment": ORDER_COMMENT,
-            "type_time": mt5.ORDER_TIME_GTC,  # Good till cancelled
+            "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling,
         }
 
-        # Send the order
         result = mt5.order_send(order_request)
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -755,16 +757,54 @@ class MT5Service:
             return OrderResponse(success=False, error=error_msg)
 
         order_ticket = int(getattr(result, "order", 0) or 0)
-        # Best-effort: for market orders, attempt to resolve the newly opened position.
-        # For pending orders, there is no position yet.
         position_ticket = None if is_pending else self.resolve_position_ticket(request.symbol, request.direction)
+
+        # Post-fill: anchor SL to the broker's actual fill price.
+        if post_fill_sl and position_ticket:
+            self._apply_post_fill_sl(position_ticket, request.symbol, request.direction, float(request.stop_pips))
 
         return OrderResponse(
             success=True,
-            ticket=order_ticket,  # legacy
+            ticket=order_ticket,
             order_ticket=order_ticket,
             position_ticket=position_ticket,
         )
+
+    def _apply_post_fill_sl(self, position_ticket: int, symbol: str, direction: TradeDirection, stop_pips: float) -> None:
+        """Set SL based on the position's actual fill price. Best-effort: logs on failure."""
+        position = self._resolve_position(position_ticket)
+        if not position:
+            logger.warning("post-fill SL: position %d not found", position_ticket)
+            return
+
+        info = mt5.symbol_info(symbol)
+        if not info:
+            logger.warning("post-fill SL: symbol_info missing for %s", symbol)
+            return
+
+        digits = int(getattr(info, "digits", 5) or 5)
+        pip_in_price = float(pip_in_price_for_symbol(symbol, digits))
+        fill_price = float(position.price_open)
+
+        if direction == TradeDirection.BUY:
+            sl_price = fill_price - stop_pips * pip_in_price
+        else:
+            sl_price = fill_price + stop_pips * pip_in_price
+        sl_price = round(sl_price, digits)
+
+        modify_request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": symbol,
+            "sl": sl_price,
+            "tp": position.tp,
+            "position": int(position.ticket),
+        }
+        result = mt5.order_send(modify_request)
+        if getattr(result, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+            logger.warning(
+                "post-fill SL modify failed for %d: retcode=%s sl=%s",
+                position_ticket, getattr(result, "retcode", None), sl_price,
+            )
 
     def modify_sl(self, request: ModifySLRequest) -> OrderResponse:
         """
@@ -934,9 +974,28 @@ class TP1WatcherManager:
         self._tracked_positions: Dict[int, Dict[str, Any]] = {}
         self._consecutive_connect_failures: int = 0
         self._MAX_CONNECT_FAILURES_LOG: int = 30  # log error after ~15s at 0.5s poll
+        # Per-call overrides for TP1 parameters. None ⇒ fall back to config defaults.
+        self._tp1_pips_override: Optional[float] = None
+        self._tp1_percent_override: Optional[float] = None
+        self._be_buffer_override: Optional[float] = None
 
-    def start(self, ui_armed: bool) -> dict:
-        """Start the watcher if not already running and lock acquired."""
+    def start(
+        self,
+        ui_armed: bool,
+        tp1_pips: Optional[float] = None,
+        tp1_percent: Optional[float] = None,
+        be_buffer_pips: Optional[float] = None,
+    ) -> dict:
+        """Start the watcher if not already running and lock acquired.
+
+        Override fields are kept up to date even when the watcher is already
+        running, so the UI can adjust TP1 distance / percent without restarting.
+        """
+        # Always update overrides; the loop reads them per tick.
+        self._tp1_pips_override = tp1_pips
+        self._tp1_percent_override = tp1_percent
+        self._be_buffer_override = be_buffer_pips
+
         if self._running and self._thread and self._thread.is_alive():
             return {"running": True, "locked": True, "pid": os.getpid(), "message": "already_running"}
 
@@ -1006,14 +1065,16 @@ class TP1WatcherManager:
         from app.services.execution_guard import execution_guard
 
         poll_s = float(settings.tp1_poll_interval_s)
-        tp1_pips = float(settings.tp1_pips_default)
-        tp1_percent = float(settings.tp1_percent_default)
-        be_buffer = float(settings.tp1_be_buffer_pips)
-
-        logger.info("TP1 watcher started (poll=%.1fs, pips=%.1f, pct=%.1f%%)", poll_s, tp1_pips, tp1_percent)
+        logger.info("TP1 watcher started (poll=%.1fs, override_pips=%s, override_pct=%s)",
+                    poll_s, self._tp1_pips_override, self._tp1_percent_override)
 
         try:
             while not self._stop_event.is_set():
+                # Resolve effective parameters per tick so live UI overrides take effect.
+                tp1_pips = float(self._tp1_pips_override) if self._tp1_pips_override and self._tp1_pips_override > 0 else float(settings.tp1_pips_default)
+                tp1_percent = float(self._tp1_percent_override) if self._tp1_percent_override and self._tp1_percent_override > 0 else float(settings.tp1_percent_default)
+                be_buffer = float(self._be_buffer_override) if self._be_buffer_override is not None else float(settings.tp1_be_buffer_pips)
+
                 try:
                     self._tick(execution_guard, tp1_pips, tp1_percent, be_buffer)
                 except Exception as exc:

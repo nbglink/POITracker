@@ -2,18 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { getPosition, moveToBE, partialClose, closePosition, setTP1Watcher, getTP1WatcherStatus } from '../api/mt5';
 import { PartialCloseResponse, PositionInfo } from '../types';
 import { Button } from './ui/Button';
-
-/** Format volume to 2 decimal places */
-function fmtVol(v: number): string {
-  return v.toFixed(2);
-}
-
-/** Format monetary amount with sign and $ */
-function fmtMoney(v: number | null | undefined): string {
-  if (v == null) return '';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}$${Math.abs(v).toFixed(2)}`;
-}
+import { formatVolume as fmtVol, formatMoney as fmtMoney } from '../utils/formatters';
 
 interface PostOrderPanelProps {
   orderTicket: number;
@@ -132,11 +121,12 @@ export function PostOrderPanel({
     });
   };
 
-  // Toggle backend watcher when Auto TP1 checkbox or armed state changes
+  // Toggle backend watcher when Auto TP1 checkbox, armed state, or TP1
+  // parameters change. Debounce by 300ms so editing the partial-percent
+  // input doesn't restart the watcher on every keystroke.
   useEffect(() => {
     if (positionTicket == null) return;
 
-    // If not armed, ensure watcher is stopped and knows armed=false
     if (!armed) {
       setTP1Watcher(false, false)
         .then(() => setWatcherStatus('Disarmed — watcher paused'))
@@ -144,24 +134,32 @@ export function PostOrderPanel({
       return;
     }
 
-    setTP1Watcher(autoTp1Enabled, armed)
-      .then((res) => {
-        if (autoTp1Enabled) {
-          if (res.running) {
-            setWatcherStatus('Watcher active');
-          } else {
-            setWatcherStatus(res.reason || 'Watcher failed to start');
-            setAutoTp1Enabled(false);
-          }
-        } else {
-          setWatcherStatus('');
-        }
+    const timer = setTimeout(() => {
+      setTP1Watcher(autoTp1Enabled, armed, {
+        tp1_pips: tp1Pips,
+        tp1_percent: partialPercentLocal,
+        be_buffer_pips: beBufferPips,
       })
-      .catch(() => {
-        setWatcherStatus('Watcher call failed');
-        if (autoTp1Enabled) setAutoTp1Enabled(false);
-      });
-  }, [autoTp1Enabled, armed, positionTicket]);
+        .then((res) => {
+          if (autoTp1Enabled) {
+            if (res.running) {
+              setWatcherStatus('Watcher active');
+            } else {
+              setWatcherStatus(res.reason || 'Watcher failed to start');
+              setAutoTp1Enabled(false);
+            }
+          } else {
+            setWatcherStatus('');
+          }
+        })
+        .catch(() => {
+          setWatcherStatus('Watcher call failed');
+          if (autoTp1Enabled) setAutoTp1Enabled(false);
+        });
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [autoTp1Enabled, armed, positionTicket, tp1Pips, partialPercentLocal, beBufferPips]);
 
   // Stop watcher on unmount
   useEffect(() => {
@@ -170,23 +168,25 @@ export function PostOrderPanel({
     };
   }, []);
 
-  // Poll watcher status — detect TP1 and SL events for toast notifications
+  // Poll watcher status — detect TP1 and SL events for toast notifications.
+  // Exponential backoff on consecutive failures (2s → 4s → 8s … capped at 30s).
   useEffect(() => {
     if (!autoTp1Enabled) return;
 
-    const interval = setInterval(async () => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveFailures = 0;
+
+    const tick = async () => {
+      if (cancelled) return;
       try {
         const status = await getTP1WatcherStatus();
+        consecutiveFailures = 0;
 
         if (status.running) {
-          const st = status as any;
-          const mt5Ok = st.mt5_connected !== false;
-          const watcherArmed = st.ui_armed !== false;
-
-          if (!mt5Ok) {
-            const fails = st.consecutive_connect_failures ?? 0;
-            setWatcherStatus(`Watcher active · MT5 disconnected (${fails} ticks)`);
-          } else if (!watcherArmed) {
+          if (!status.mt5_connected) {
+            setWatcherStatus(`Watcher active · MT5 disconnected (${status.consecutive_connect_failures} ticks)`);
+          } else if (!status.ui_armed) {
             setWatcherStatus('Watcher active · ⚠ armed desync — toggle armed');
           } else {
             setWatcherStatus(
@@ -199,44 +199,53 @@ export function PostOrderPanel({
           setWatcherStatus('Watcher stopped');
         }
 
-        // Check for new TP1 event
-        const tp1Evt = (status as any).last_tp1_event;
-        if (tp1Evt && typeof tp1Evt.timestamp === 'number' && tp1Evt.timestamp > lastSeenTp1TsRef.current) {
+        const tp1Evt = status.last_tp1_event;
+        if (tp1Evt && tp1Evt.timestamp > lastSeenTp1TsRef.current) {
           lastSeenTp1TsRef.current = tp1Evt.timestamp;
           setTp1Done(true);
 
-          const profitSign = tp1Evt.pips_profit >= 0 ? '+' : '';
-          const beNote = tp1Evt.be_status === 'ok' ? ' · SL → BE ✓' : ` · BE: ${tp1Evt.be_status}`;
+          const pips = tp1Evt.pips_profit ?? 0;
+          const profitSign = pips >= 0 ? '+' : '';
+          const beNote = tp1Evt.be_status === 'ok' ? ' · SL → BE ✓' : ` · BE: ${tp1Evt.be_status ?? 'unknown'}`;
           const moneyStr = tp1Evt.profit_money != null ? ` · ${fmtMoney(tp1Evt.profit_money)}` : '';
           const message =
             `🎯 TP1 Hit!\n` +
             `${tp1Evt.symbol} ${tp1Evt.direction} #${tp1Evt.ticket}\n` +
-            `Closed ${fmtVol(tp1Evt.close_volume)} lots @ ${tp1Evt.close_price}\n` +
-            `${profitSign}${tp1Evt.pips_profit} pips${moneyStr}${beNote}`;
+            `Closed ${fmtVol(tp1Evt.close_volume ?? 0)} lots @ ${tp1Evt.close_price ?? '?'}\n` +
+            `${profitSign}${pips} pips${moneyStr}${beNote}`;
 
           onActionComplete('tp1_watcher', true, message);
         }
 
-        // Check for new SL event
-        const slEvt = (status as any).last_sl_event;
-        if (slEvt && typeof slEvt.timestamp === 'number' && slEvt.timestamp > lastSeenSlTsRef.current) {
+        const slEvt = status.last_sl_event;
+        if (slEvt && slEvt.timestamp > lastSeenSlTsRef.current) {
           lastSeenSlTsRef.current = slEvt.timestamp;
 
           const moneyStr = slEvt.profit_money != null ? ` · ${fmtMoney(slEvt.profit_money)}` : '';
           const message =
             `🛑 SL Hit\n` +
             `${slEvt.symbol} ${slEvt.direction} #${slEvt.ticket}\n` +
-            `Closed ${fmtVol(slEvt.volume)} lots @ ${slEvt.sl_price}\n` +
-            `-${slEvt.pips_loss} pips${moneyStr}`;
+            `Closed ${fmtVol(slEvt.volume ?? 0)} lots @ ${slEvt.sl_price ?? '?'}\n` +
+            `-${slEvt.pips_loss ?? 0} pips${moneyStr}`;
 
           onActionComplete('sl_hit', false, message);
         }
       } catch {
-        // Ignore poll errors
+        consecutiveFailures += 1;
       }
-    }, 2000);
 
-    return () => clearInterval(interval);
+      if (cancelled) return;
+      const baseMs = 2000;
+      const delay = Math.min(baseMs * Math.pow(2, consecutiveFailures), 30_000);
+      timer = setTimeout(tick, delay);
+    };
+
+    timer = setTimeout(tick, 0);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [autoTp1Enabled, onActionComplete]);
 
   const handleTP1Now = async () => {

@@ -11,7 +11,9 @@ import {
   MoveSLToBERequest,
   MoveToBERequest,
   TP1ManageRequest,
-  TP1ManageResponse
+  TP1ManageResponse,
+  TP1WatcherSetResponse,
+  TP1WatcherStatus,
 } from '../types';
 
 export async function getMT5Status(): Promise<MT5Status> {
@@ -33,13 +35,36 @@ export async function setBackendExecution(enabled: boolean): Promise<boolean> {
   return response.data.backend_enabled;
 }
 
-export async function getSymbols(): Promise<any[]> {
-  const response = await apiClient.get<{
-    initialized: boolean;
-    last_error?: string;
-    symbols: any[];
-  }>('/mt5/symbols');
+export interface MT5SymbolInfo {
+  name: string;
+  path: string | null;
+  trade_allowed: boolean;
+  digits: number;
+  point: number;
+  trade_contract_size: number;
+  description: string | null;
+  pip_in_price: number;
+  tick_size: number;
+  tick_value: number;
+  pip_size: number;
+  pip_value_per_lot: number;
+}
+
+export interface SymbolsResponse {
+  initialized: boolean;
+  last_error?: string;
+  error_message?: string;
+  symbols: MT5SymbolInfo[];
+}
+
+export async function getSymbols(): Promise<MT5SymbolInfo[]> {
+  const response = await apiClient.get<SymbolsResponse>('/mt5/symbols');
   return response.data.symbols || [];
+}
+
+export async function getSymbolsRaw(): Promise<SymbolsResponse> {
+  const response = await apiClient.get<SymbolsResponse>('/mt5/symbols');
+  return response.data;
 }
 
 export async function placeOrder(request: OrderRequest): Promise<OrderResponse> { 
@@ -94,19 +119,26 @@ export async function manageTP1(request: TP1ManageRequest): Promise<TP1ManageRes
 
 // --- TP1 Watcher ---
 
-export async function setTP1Watcher(enabled: boolean, ui_armed: boolean): Promise<{ running: boolean; locked: boolean; pid?: number; reason?: string; message?: string }> {
-  const response = await apiClient.post('/mt5/tp1/watcher', { enabled, ui_armed });
+export interface TP1WatcherOverrides {
+  tp1_pips?: number;
+  tp1_percent?: number;
+  be_buffer_pips?: number;
+}
+
+export async function setTP1Watcher(
+  enabled: boolean,
+  ui_armed: boolean,
+  overrides: TP1WatcherOverrides = {},
+): Promise<TP1WatcherSetResponse> {
+  const payload: Record<string, unknown> = { enabled, ui_armed };
+  if (overrides.tp1_pips != null) payload.tp1_pips = overrides.tp1_pips;
+  if (overrides.tp1_percent != null) payload.tp1_percent = overrides.tp1_percent;
+  if (overrides.be_buffer_pips != null) payload.be_buffer_pips = overrides.be_buffer_pips;
+  const response = await apiClient.post<TP1WatcherSetResponse>('/mt5/tp1/watcher', payload);
   return response.data;
 }
 
-export async function getTP1WatcherStatus(): Promise<{
-  running: boolean;
-  lock_owner_pid: number | null;
-  lock_age_seconds: number | null;
-  watched_positions: number;
-  tp1_done_count: number;
-  last_error: string | null;
-}> {
-  const response = await apiClient.get('/mt5/tp1/watcher/status');
+export async function getTP1WatcherStatus(): Promise<TP1WatcherStatus> {
+  const response = await apiClient.get<TP1WatcherStatus>('/mt5/tp1/watcher/status');
   return response.data;
 }

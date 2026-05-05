@@ -1,21 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useSettings } from '../context/SettingsContext';
 import { Button } from './ui/Button';
+import { getSymbolsRaw, MT5SymbolInfo } from '../api/mt5';
 
-interface SymbolRow {
-  name: string;
-  path?: string;
-  trade_allowed?: boolean;
-  digits?: number;
-  point?: number;
-  trade_contract_size?: number;
-  description?: string;
-  pip_size?: number;
-  pip_value_per_lot?: number;
-  pip_in_price?: number;
-  tick_size?: number;
-  tick_value?: number;
-}
+type SymbolRow = MT5SymbolInfo;
 
 // Use server-calculated values, fallback to client calculation only if needed
 function getPipValues(s: SymbolRow) {
@@ -45,15 +33,13 @@ function getPipValues(s: SymbolRow) {
   return { pip_size, pip_value_per_1_lot };
 }
 
-interface SymbolsResponse {
-  initialized: boolean;
-  last_error?: string;
-  error_message?: string;
-  symbols: SymbolRow[];
-  symbols_count?: number;
-}
-
-export function SymbolsPanel({ onApply }: { onApply?: (count: number) => void }) {
+export function SymbolsPanel({
+  onApply,
+  onError,
+}: {
+  onApply?: (count: number) => void;
+  onError?: (message: string) => void;
+}) {
   const [symbols, setSymbols] = useState<SymbolRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,8 +59,7 @@ export function SymbolsPanel({ onApply }: { onApply?: (count: number) => void })
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('http://localhost:8000/mt5/symbols');
-      const data: SymbolsResponse = await response.json();
+      const data = await getSymbolsRaw();
 
       setConnectionStatus({
         initialized: data.initialized,
@@ -136,7 +121,10 @@ export function SymbolsPanel({ onApply }: { onApply?: (count: number) => void })
 
   function applySelected() {
     const chosen = symbols.filter((s) => selected[s.name]);
-    if (chosen.length === 0) return alert('No symbols selected');
+    if (chosen.length === 0) {
+      onError?.('No symbols selected');
+      return;
+    }
 
     const presets = chosen.map((s) => {
       const { pip_size, pip_value_per_1_lot } = getPipValues(s);
@@ -145,8 +133,7 @@ export function SymbolsPanel({ onApply }: { onApply?: (count: number) => void })
 
     const stillValid = presets.some((p) => p.symbol === settings.active_symbol);
     updateSettings({ symbol_presets: presets, active_symbol: stillValid ? settings.active_symbol : '' });
-    if (onApply) onApply(presets.length);
-    alert(`Applied ${presets.length} symbols to presets`);
+    onApply?.(presets.length);
   }
 
   // Filter symbols based on search query

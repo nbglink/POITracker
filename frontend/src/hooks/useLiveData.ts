@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { WS_BASE_URL } from '../api/client';
 
 interface TickData {
   symbol: string;
@@ -31,7 +32,7 @@ interface UseLiveDataReturn {
   unsubscribe: () => void;
 }
 
-const WS_URL = 'ws://localhost:8000/ws/live';
+const WS_URL = `${WS_BASE_URL}/ws/live`;
 
 export function useLiveData(options: UseLiveDataOptions = {}): UseLiveDataReturn {
   const { symbol, enablePrice = true, enableAccount = true } = options;
@@ -42,6 +43,7 @@ export function useLiveData(options: UseLiveDataOptions = {}): UseLiveDataReturn
   const enablePriceRef = useRef(enablePrice);
   const enableAccountRef = useRef(enableAccount);
   const isConnectingRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
   
   const [tick, setTick] = useState<TickData | null>(null);
   const [account, setAccount] = useState<AccountData | null>(null);
@@ -98,6 +100,7 @@ export function useLiveData(options: UseLiveDataOptions = {}): UseLiveDataReturn
 
       ws.onopen = () => {
         isConnectingRef.current = false;
+        reconnectAttemptsRef.current = 0;
         setConnected(true);
         setError(null);
         console.log('[WS] Connected to live data stream');
@@ -151,13 +154,18 @@ export function useLiveData(options: UseLiveDataOptions = {}): UseLiveDataReturn
         isConnectingRef.current = false;
         wsRef.current = null;
         setConnected(false);
-        console.log(`[WS] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'}), reconnecting in 3s...`);
-        
-        // Auto-reconnect after 3 seconds (only if not a clean close)
+
+        // Exponential backoff with jitter, capped at 30s. Skip on clean close.
         if (event.code !== 1000) {
+          const attempt = reconnectAttemptsRef.current;
+          reconnectAttemptsRef.current = attempt + 1;
+          const base = Math.min(3000 * Math.pow(2, attempt), 30_000);
+          const jitter = Math.floor(Math.random() * 500);
+          const delay = base + jitter;
+          console.log(`[WS] Disconnected (code: ${event.code}); reconnecting in ${delay}ms (attempt ${attempt + 1})`);
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
-          }, 3000);
+          }, delay);
         }
       };
     } catch (e) {

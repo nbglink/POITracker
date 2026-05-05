@@ -5,6 +5,24 @@ interface RiskVisualizerProps {
   actualRiskPercent: number;
   targetRiskAmount: number;
   actualRiskAmount: number;
+  /** Account currency code, e.g. "USD", "EUR". Falls back to "USD" if unset. */
+  currency?: string;
+}
+
+const CURRENCY_PREFIX: Record<string, string> = {
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  JPY: '¥',
+  CHF: 'CHF ',
+  AUD: 'A$',
+  CAD: 'C$',
+};
+
+function formatAmount(value: number, currency: string | undefined): string {
+  const code = (currency || 'USD').toUpperCase();
+  const prefix = CURRENCY_PREFIX[code] ?? `${code} `;
+  return `${prefix}${value.toFixed(2)}`;
 }
 
 export function RiskVisualizer({
@@ -12,6 +30,7 @@ export function RiskVisualizer({
   actualRiskPercent,
   targetRiskAmount,
   actualRiskAmount,
+  currency,
 }: RiskVisualizerProps) {
   const exceeds = actualRiskPercent > targetRiskPercent;
   const maxPercent = Math.max(targetRiskPercent, actualRiskPercent, 5);
@@ -70,7 +89,7 @@ export function RiskVisualizer({
         <div>
           <div className="text-xs text-muted-foreground mb-1">Target Amount</div>
           <div className="font-mono text-lg text-blue-400">
-            ${targetRiskAmount.toFixed(2)}
+            {formatAmount(targetRiskAmount, currency)}
           </div>
         </div>
         <div>
@@ -81,7 +100,7 @@ export function RiskVisualizer({
               exceeds ? 'text-amber-400' : 'text-emerald-400'
             )}
           >
-            ${actualRiskAmount.toFixed(2)}
+            {formatAmount(actualRiskAmount, currency)}
           </div>
         </div>
       </div>

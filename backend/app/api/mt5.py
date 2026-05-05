@@ -21,17 +21,25 @@ from app.models import (
 from app.services.mt5_service import mt5_service, tp1_watcher
 from app.services.execution_guard import execution_guard
 from app.services.pip_specs import pip_in_price_for_symbol, pip_spec_from_mt5
+from app.services.symbol_defaults import get_symbol_defaults
 import MetaTrader5 as mt5
 
 router = APIRouter()
 
 
 def check_execution_auth(ui_armed: bool = False):
-    """Dependency to check execution authorization."""
+    """Raise 403 if dual authorization fails."""
     allowed, reason = execution_guard.is_execution_allowed(ui_armed)
     if not allowed:
         raise HTTPException(status_code=403, detail=f"Execution not authorized: {reason}")
     return True
+
+
+def _require_auth(ui_armed: bool) -> None:
+    """Shorthand for endpoints that need to short-circuit on auth failure."""
+    allowed, reason = execution_guard.is_execution_allowed(ui_armed)
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"Execution not authorized: {reason}")
 
 
 @router.get("/mt5/status", response_model=MT5Status)
@@ -112,9 +120,11 @@ async def get_symbols():
                         if tick_size > 0 and tick_value > 0:
                             pip_value = (pip_in_price / tick_size) * tick_value
 
-                        # Fallback if MT5 doesn't provide tick value (keeps UI usable)
+                        # Fallback if MT5 doesn't provide tick value: use the
+                        # per-symbol preset. The previous `contract_size * pip_in_price`
+                        # formula underestimated XAU/BTC by orders of magnitude.
                         if pip_value <= 0:
-                            pip_value = contract_size * pip_in_price
+                            pip_value = get_symbol_defaults(name).pip_value_per_1_lot
                         
                         symbols_list.append({
                             "name": name,
@@ -193,46 +203,22 @@ async def set_armed_status(request: ArmedStatusRequest):
 
 @router.post("/mt5/order", response_model=OrderResponse)
 async def place_order(request: OrderRequest):
-    """
-    Place a market or limit order.
-
-    Requires execution authorization (UI armed + backend enabled).
-    """
-    # Check execution authorization
-    allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-    if not allowed:
-        return OrderResponse(success=False, error=f"Execution not authorized: {reason}")
-
+    """Place a market or limit order. Requires dual authorization."""
+    _require_auth(request.ui_armed)
     return mt5_service.place_order(request)
 
 
 @router.post("/mt5/partial-close", response_model=PartialCloseResponse)
 async def partial_close(request: PartialCloseRequest):
-    """
-    Partially close an open position.
-
-    Requires execution authorization (UI armed + backend enabled).
-    """
-    # Check execution authorization
-    allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-    if not allowed:
-        return PartialCloseResponse(success=False, error=f"Execution not authorized: {reason}")
-
+    """Partially close an open position. Requires dual authorization."""
+    _require_auth(request.ui_armed)
     return mt5_service.partial_close(request)
 
 
 @router.post("/mt5/modify-sl", response_model=OrderResponse)
 async def modify_sl(request: ModifySLRequest):
-    """
-    Modify stop loss of an open position.
-
-    Requires execution authorization (UI armed + backend enabled).
-    """
-    # Check execution authorization
-    allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-    if not allowed:
-        return OrderResponse(success=False, error=f"Execution not authorized: {reason}")
-
+    """Modify stop loss of an open position. Requires dual authorization."""
+    _require_auth(request.ui_armed)
     return mt5_service.modify_sl(request)
 
 
@@ -251,27 +237,21 @@ async def list_positions():
 @router.post("/mt5/move-sl-to-be", response_model=OrderResponse)
 async def move_sl_to_be(request: MoveSLToBERequest):
     """Move SL to true break-even (position.price_open) with optional pip buffer."""
-    allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-    if not allowed:
-        return OrderResponse(success=False, error=f"Execution not authorized: {reason}")
+    _require_auth(request.ui_armed)
     return mt5_service.move_sl_to_be(request)
 
 
 @router.post("/mt5/move-to-be", response_model=OrderResponse)
 async def move_to_be(request: MoveToBERequest):
     """Move SL to break-even derived from MT5 position.price_open (position ticket required)."""
-    allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-    if not allowed:
-        return OrderResponse(success=False, error=f"Execution not authorized: {reason}")
+    _require_auth(request.ui_armed)
     return mt5_service.move_to_be(request)
 
 
 @router.post("/mt5/tp1", response_model=TP1ManageResponse)
 async def manage_tp1(request: TP1ManageRequest):
     """Execute TP1 management: partial close + optional move SL to BE."""
-    allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-    if not allowed:
-        return TP1ManageResponse(success=False, error=f"Execution not authorized: {reason}")
+    _require_auth(request.ui_armed)
     return mt5_service.manage_tp1(request)
 
 
@@ -279,10 +259,13 @@ async def manage_tp1(request: TP1ManageRequest):
 async def control_tp1_watcher(request: TP1WatcherRequest):
     """Start or stop the backend TP1 watcher thread."""
     if request.enabled:
-        allowed, reason = execution_guard.is_execution_allowed(request.ui_armed)
-        if not allowed:
-            return TP1WatcherResponse(running=False, locked=False, reason=f"Not authorized: {reason}")
-        result = tp1_watcher.start(ui_armed=request.ui_armed)
+        _require_auth(request.ui_armed)
+        result = tp1_watcher.start(
+            ui_armed=request.ui_armed,
+            tp1_pips=request.tp1_pips,
+            tp1_percent=request.tp1_percent,
+            be_buffer_pips=request.be_buffer_pips,
+        )
     else:
         result = tp1_watcher.stop()
 

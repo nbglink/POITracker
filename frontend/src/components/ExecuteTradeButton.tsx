@@ -36,36 +36,29 @@ export function ExecuteTradeButton({
 
     setLoading(true);
     try {
-      // Get pip_size from settings for this symbol
+      // For pending orders we can pre-compute SL because the broker will fill
+      // at the configured price. For market orders we send `stop_pips` and let
+      // the backend anchor SL to the broker's actual fill price (avoids the
+      // spread/slippage drift we were seeing).
       const symbolPreset = settings.symbol_presets.find(p => p.symbol === symbol);
-      const pipSize = symbolPreset?.pip_size || 0.0001; // Default to forex pip size
-      
-      // Calculate SL and TP prices using actual pip size
-      const slPrice = direction === 'buy'
-        ? entryPrice - (stopPips * pipSize)
-        : entryPrice + (stopPips * pipSize);
+      const pipSize = symbolPreset?.pip_size || 0.0001;
+
+      const slPrice = pendingOrder
+        ? (direction === 'buy' ? entryPrice - stopPips * pipSize : entryPrice + stopPips * pipSize)
+        : null;
 
       const request: OrderRequest = {
         symbol,
         direction,
         volume,
-        // IMPORTANT: `price=null` => market order (backend uses TRADE_ACTION_DEAL)
-        // `price=entryPrice` => pending order (backend uses TRADE_ACTION_PENDING)
         price: pendingOrder ? entryPrice : null,
         sl_price: slPrice,
-        tp_price: null,  // TP1 is internal — never set broker-side TP
-        ui_armed: armed
+        stop_pips: stopPips,
+        tp_price: null,
+        ui_armed: armed,
       };
 
-      console.log('Executing order:', {
-        symbol,
-        direction,
-        entry: entryPrice,
-        sl: slPrice,
-        tp: null,
-        pipSize,
-        stopPips
-      });
+      console.log('Executing order:', { symbol, direction, entry: entryPrice, sl: slPrice, stop_pips: stopPips, pipSize });
 
       const response = await placeOrder(request);
 
