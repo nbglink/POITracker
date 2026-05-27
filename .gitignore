@@ -43,3 +43,11 @@ backend/.tp1_watcher.lock
 launcher/build/
 launcher/dist/
 launcher/*.spec
+
+# Desktop (single-exe) build artifacts
+desktop/build/
+desktop/dist/
+desktop/*.spec
+desktop/poi-tracker.log
+desktop/window-capture.png
+desktop/icon-preview.png
