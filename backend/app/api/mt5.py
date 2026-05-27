@@ -6,15 +6,14 @@ All endpoints require execution authorization.
 """
 from fastapi import APIRouter, HTTPException
 from app.models import (
-    MT5Status, OrderRequest, PartialCloseRequest, ModifySLRequest, OrderResponse,
+    MT5Status, OrderRequest, PartialCloseRequest, OrderResponse,
     PartialCloseResponse,
     ArmedStatusRequest,
     PositionResponse,
     OpenPositionInfo,
-    MoveSLToBERequest,
+    OpenOrderInfo,
+    CancelOrderRequest,
     MoveToBERequest,
-    TP1ManageRequest,
-    TP1ManageResponse,
     TP1WatcherRequest,
     TP1WatcherResponse,
 )
@@ -46,13 +45,6 @@ def _require_auth(ui_armed: bool) -> None:
 async def get_mt5_status():
     """Get MT5 connection and account status."""
     return mt5_service.get_status()
-
-
-@router.post("/mt5/execution-enable")
-async def set_execution_enabled(request: ArmedStatusRequest):
-    """Admin endpoint to enable/disable backend execution flag."""
-    execution_guard.set_execution_enabled(request.armed)
-    return {"backend_enabled": request.armed}
 
 
 @router.get("/mt5/armed")
@@ -215,13 +207,6 @@ async def partial_close(request: PartialCloseRequest):
     return mt5_service.partial_close(request)
 
 
-@router.post("/mt5/modify-sl", response_model=OrderResponse)
-async def modify_sl(request: ModifySLRequest):
-    """Modify stop loss of an open position. Requires dual authorization."""
-    _require_auth(request.ui_armed)
-    return mt5_service.modify_sl(request)
-
-
 @router.get("/mt5/position/{ticket}", response_model=PositionResponse)
 async def get_position(ticket: int):
     """Resolve and return an open position snapshot from a position or order ticket."""
@@ -234,11 +219,17 @@ async def list_positions():
     return mt5_service.list_positions()
 
 
-@router.post("/mt5/move-sl-to-be", response_model=OrderResponse)
-async def move_sl_to_be(request: MoveSLToBERequest):
-    """Move SL to true break-even (position.price_open) with optional pip buffer."""
+@router.get("/mt5/orders", response_model=list[OpenOrderInfo])
+async def list_orders():
+    """List working (pending) orders for this app (magic-filtered)."""
+    return mt5_service.list_orders()
+
+
+@router.post("/mt5/order/cancel", response_model=OrderResponse)
+async def cancel_order(request: CancelOrderRequest):
+    """Cancel (remove) a working pending order. Requires dual authorization."""
     _require_auth(request.ui_armed)
-    return mt5_service.move_sl_to_be(request)
+    return mt5_service.cancel_order(request.order_ticket)
 
 
 @router.post("/mt5/move-to-be", response_model=OrderResponse)
@@ -246,13 +237,6 @@ async def move_to_be(request: MoveToBERequest):
     """Move SL to break-even derived from MT5 position.price_open (position ticket required)."""
     _require_auth(request.ui_armed)
     return mt5_service.move_to_be(request)
-
-
-@router.post("/mt5/tp1", response_model=TP1ManageResponse)
-async def manage_tp1(request: TP1ManageRequest):
-    """Execute TP1 management: partial close + optional move SL to BE."""
-    _require_auth(request.ui_armed)
-    return mt5_service.manage_tp1(request)
 
 
 @router.post("/mt5/tp1/watcher", response_model=TP1WatcherResponse)

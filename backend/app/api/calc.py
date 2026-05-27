@@ -57,7 +57,10 @@ async def calculate_risk(input_data: RiskCalcInput):
                 "pip_value_per_1_lot_computed": pip_spec.pip_value_per_1_lot,
                 "pip_value_per_1_lot_input": input_data.pip_value_per_1_lot,
             }
-            effective_input = input_data.model_copy(update={"pip_value_per_1_lot": pip_spec.pip_value_per_1_lot})
+            effective_input = input_data.model_copy(update={
+                "pip_value_per_1_lot": pip_spec.pip_value_per_1_lot,
+                "pip_in_price": pip_spec.pip_in_price,
+            })
         else:
             debug = {
                 "pip_value_per_1_lot_input": input_data.pip_value_per_1_lot,

@@ -1,25 +1,15 @@
 import { apiClient } from './client';
 import {
-  MT5Status,
   OrderRequest,
   PartialCloseRequest,
-  ModifySLRequest,
   OrderResponse,
   PartialCloseResponse,
   OpenPositionInfo,
   PositionResponse,
-  MoveSLToBERequest,
   MoveToBERequest,
-  TP1ManageRequest,
-  TP1ManageResponse,
   TP1WatcherSetResponse,
   TP1WatcherStatus,
 } from '../types';
-
-export async function getMT5Status(): Promise<MT5Status> {
-  const response = await apiClient.get('/mt5/status');
-  return response.data;
-}
 
 export async function getArmedStatus(): Promise<boolean> {
   const response = await apiClient.get('/mt5/armed');
@@ -30,6 +20,7 @@ export async function setArmedStatus(armed: boolean): Promise<boolean> {
   const response = await apiClient.post('/mt5/armed', { armed });
   return response.data.armed;
 }
+
 export async function setBackendExecution(enabled: boolean): Promise<boolean> {
   const response = await apiClient.post<{ backend_enabled: boolean }>('/mt5/execution-enable', { armed: enabled });
   return response.data.backend_enabled;
@@ -57,11 +48,6 @@ export interface SymbolsResponse {
   symbols: MT5SymbolInfo[];
 }
 
-export async function getSymbols(): Promise<MT5SymbolInfo[]> {
-  const response = await apiClient.get<SymbolsResponse>('/mt5/symbols');
-  return response.data.symbols || [];
-}
-
 export async function getSymbolsRaw(): Promise<SymbolsResponse> {
   const response = await apiClient.get<SymbolsResponse>('/mt5/symbols');
   return response.data;
@@ -87,11 +73,6 @@ export async function closePosition(positionTicket: number, ui_armed: boolean): 
   return response.data;
 }
 
-export async function modifySL(request: ModifySLRequest): Promise<OrderResponse> {
-  const response = await apiClient.post('/mt5/modify-sl', request);
-  return response.data;
-}
-
 export async function getPosition(ticket: number): Promise<PositionResponse> {
   const response = await apiClient.get(`/mt5/position/${ticket}`);
   return response.data;
@@ -102,18 +83,8 @@ export async function getPositions(): Promise<OpenPositionInfo[]> {
   return response.data;
 }
 
-export async function moveSLToBE(request: MoveSLToBERequest): Promise<OrderResponse> {
-  const response = await apiClient.post('/mt5/move-sl-to-be', request);
-  return response.data;
-}
-
 export async function moveToBE(request: MoveToBERequest): Promise<OrderResponse> {
   const response = await apiClient.post('/mt5/move-to-be', request);
-  return response.data;
-}
-
-export async function manageTP1(request: TP1ManageRequest): Promise<TP1ManageResponse> {
-  const response = await apiClient.post('/mt5/tp1', request);
   return response.data;
 }
 

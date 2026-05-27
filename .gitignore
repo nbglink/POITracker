@@ -38,3 +38,8 @@ poi-tracker-*.png
 # Runtime locks (TP1 watcher, etc.) — must never be tracked
 *.lock
 backend/.tp1_watcher.lock
+
+# Launcher build artifacts
+launcher/build/
+launcher/dist/
+launcher/*.spec

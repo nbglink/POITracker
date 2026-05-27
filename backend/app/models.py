@@ -27,6 +27,7 @@ class RiskCalcInput(BaseModel):
     move_to_be_enabled: bool = Field(default=True, description="Move SL to break-even after TP1")
     be_buffer_pips: float = Field(default=0.0, ge=0, description="Buffer pips for break-even SL")
     pip_value_per_1_lot: float = Field(..., gt=0, description="Pip value per 1.0 lot in account currency")
+    pip_in_price: Optional[float] = Field(None, gt=0, description="Price distance of one pip; set by the API from MT5 specs. Used to convert pip-based buffers to price.")
     min_volume: float = Field(default=0.01, gt=0, description="Broker minimum volume")
     volume_step: float = Field(default=0.01, gt=0, description="Broker volume step")
 
@@ -108,13 +109,6 @@ class PartialCloseRequest(BaseModel):
         return self
 
 
-class ModifySLRequest(BaseModel):
-    """Request to modify stop loss."""
-    ticket: int = Field(..., description="Position ticket number")
-    sl_price: float = Field(..., description="New stop loss price")
-    ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
-
-
 class OrderResponse(BaseModel):
     """Response from order operations."""
     success: bool = Field(..., description="Whether operation succeeded")
@@ -155,6 +149,28 @@ class OpenPositionInfo(BaseModel):
     time: Optional[int] = None
 
 
+class OpenOrderInfo(BaseModel):
+    """Raw snapshot of a working (pending) MT5 order (magic-filtered)."""
+    ticket: int
+    symbol: str
+    type: int  # mt5 ORDER_TYPE_* (2=BUY_LIMIT, 3=SELL_LIMIT, 4=BUY_STOP, 5=SELL_STOP)
+    type_label: str  # human-readable, e.g. "BUY LIMIT"
+    direction: TradeDirection  # buy/sell derived from type
+    volume: float
+    price_open: float  # the resting (trigger) price
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+    magic: int
+    comment: Optional[str] = None
+    time: Optional[int] = None
+
+
+class CancelOrderRequest(BaseModel):
+    """Request to cancel (remove) a working pending order."""
+    order_ticket: int = Field(..., description="Pending order ticket to cancel")
+    ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
+
+
 class PositionInfo(BaseModel):
     """Snapshot of an open position."""
     position_ticket: int
@@ -166,6 +182,7 @@ class PositionInfo(BaseModel):
     tp: Optional[float] = None
     digits: int
     pip_in_price: float
+    pip_value_per_1_lot: float = 0.0  # account currency per pip per 1.0 lot; 0 if unavailable
     volume_min: float
     volume_step: float
 
@@ -177,37 +194,11 @@ class PositionResponse(BaseModel):
     error: Optional[str] = None
 
 
-class MoveSLToBERequest(BaseModel):
-    """(Legacy) Request to move SL to break-even using the true position entry price."""
-    ticket: int = Field(..., description="Order or position ticket")
-    be_buffer_pips: float = Field(default=0.0, ge=0, description="Buffer pips beyond entry")
-    ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
-
-
 class MoveToBERequest(BaseModel):
     """Request to move SL to true BE derived from MT5 position.price_open."""
     position_ticket: int = Field(..., description="Position ticket number")
     buffer_pips: float = Field(default=0.0, ge=0, description="Optional BE buffer in pips")
     ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
-
-
-class TP1ManageRequest(BaseModel):
-    """Request to execute TP1 management: partial close + move SL to BE."""
-    ticket: int = Field(..., description="Order or position ticket")
-    partial_percent: float = Field(default=50.0, gt=0, le=100, description="Percent of position to close")
-    move_to_be_enabled: bool = Field(default=True, description="Whether to move SL to BE after partial close")
-    be_buffer_pips: float = Field(default=0.0, ge=0, description="Buffer pips for BE SL")
-    ui_armed: bool = Field(default=False, description="UI armed status for execution guard")
-
-
-class TP1ManageResponse(BaseModel):
-    """Response for TP1 management."""
-    success: bool
-    position_ticket: Optional[int] = None
-    closed_volume_requested: Optional[float] = None
-    closed_volume_normalized: Optional[float] = None
-    sl_price_set: Optional[float] = None
-    error: Optional[str] = None
 
 
 class TP1WatcherRequest(BaseModel):

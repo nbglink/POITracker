@@ -59,15 +59,18 @@ class RiskEngine:
         partial_percent = input_data.partial_percent
         remaining_volume = round(volume * (1 - partial_percent / 100), 2)
 
-        # Break-even SL price calculation
+        # Break-even SL price calculation. The buffer is in pips, so convert it
+        # to price using pip_in_price (set by the API from MT5 specs). When that
+        # is unavailable (MT5 not connected) we can't convert, so BE is just the
+        # entry — the buffer is dropped rather than added in the wrong units.
         be_sl_price = None
         if input_data.move_to_be_enabled and input_data.entry_price > 0:
-            # Get pip size from symbol (approximate based on entry price magnitude)
-            # This is a simplified calculation - real implementation should use symbol info
+            pip_in_price = input_data.pip_in_price or 0.0
+            buffer_price = input_data.be_buffer_pips * pip_in_price
             if input_data.direction.value == "buy":
-                be_sl_price = input_data.entry_price + input_data.be_buffer_pips
+                be_sl_price = input_data.entry_price + buffer_price
             else:
-                be_sl_price = input_data.entry_price - input_data.be_buffer_pips
+                be_sl_price = input_data.entry_price - buffer_price
 
         return RiskCalcOutput(
             allowed=allowed,

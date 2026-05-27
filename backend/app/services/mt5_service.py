@@ -21,20 +21,15 @@ from app.models import (
     OrderRequest,
     PartialCloseRequest,
     PartialCloseResponse,
-    ModifySLRequest,
     OrderResponse,
     PositionInfo,
     PositionResponse,
-    MoveSLToBERequest,
     MoveToBERequest,
-    TP1ManageRequest,
-    TP1ManageResponse,
     TradeDirection,
 )
 from app.config import settings
-from app.services.pip_specs import pip_in_price_for_symbol
+from app.services.pip_specs import pip_in_price_for_symbol, pip_spec_from_mt5
 from app.services.volume_normalizer import floor_to_step
-from decimal import Decimal, ROUND_FLOOR
 from datetime import datetime, timedelta
 
 
@@ -139,25 +134,6 @@ class MT5Service:
         volume_max = float(getattr(info, "volume_max", 0.0) or 0.0)
         return (volume_min, volume_step, volume_max)
 
-    def _normalize_volume_floor(self, requested: float, volume_min: float, volume_step: float, volume_max: float) -> float:
-        """Normalize volume by flooring to broker step; returns 0.0 if below min.
-
-        Wraps :func:`volume_normalizer.floor_to_step`. Returns 0 when the floored
-        result would fall under ``volume_min`` (broker would reject the order).
-        """
-        if requested <= 0 or volume_min <= 0 or volume_step <= 0:
-            return 0.0
-
-        normalized = floor_to_step(requested, volume_step)
-        if normalized < volume_min:
-            return 0.0
-        if volume_max and volume_max > 0 and normalized > volume_max:
-            normalized = volume_max
-        return normalized
-
-    def _floor_to_step(self, value: float, step: float) -> float:
-        return floor_to_step(value, step)
-
     def normalize_close_volume(self, symbol: str, position_volume: float, percent: float) -> Dict[str, Any]:
         """Compute broker-safe close volume for a partial close.
 
@@ -171,7 +147,7 @@ class MT5Service:
         if pct >= 100.0:
             close_volume = pos_vol
         else:
-            close_volume = self._floor_to_step(requested_volume, float(volume_step or 0.0))
+            close_volume = floor_to_step(requested_volume, float(volume_step or 0.0))
 
         remaining_volume = pos_vol - float(close_volume)
         blocked_reason: Optional[str] = None
@@ -195,14 +171,6 @@ class MT5Service:
             "volume_min": float(volume_min or 0.0),
             "volume_step": float(volume_step or 0.0),
         }
-
-    def _is_volume_exact_step(self, requested: float, volume_step: float) -> bool:
-        if volume_step <= 0:
-            return False
-        req = Decimal(str(requested))
-        step = Decimal(str(volume_step))
-        steps = (req / step)
-        return steps == steps.to_integral_value()
 
     def _resolve_position(self, ticket: int):
         """Resolve an open position from either a position ticket or an order ticket."""
@@ -249,6 +217,11 @@ class MT5Service:
         pip_in_price = float(pip_in_price_for_symbol(symbol, digits))
         volume_min, volume_step, _ = self._symbol_volume_specs(symbol)
 
+        # MT5-derived pip value (account currency per pip per 1.0 lot) so the UI
+        # can show live money P&L. 0.0 when specs are unavailable.
+        pip_spec = pip_spec_from_mt5(symbol)
+        pip_value_per_1_lot = float(pip_spec.pip_value_per_1_lot) if pip_spec and pip_spec.pip_value_per_1_lot > 0 else 0.0
+
         direction = TradeDirection.BUY if int(position.type) == mt5.POSITION_TYPE_BUY else TradeDirection.SELL
 
         return PositionResponse(
@@ -263,6 +236,7 @@ class MT5Service:
                 tp=float(position.tp) if position.tp else None,
                 digits=digits,
                 pip_in_price=pip_in_price,
+                pip_value_per_1_lot=pip_value_per_1_lot,
                 volume_min=float(volume_min or 0.0),
                 volume_step=float(volume_step or 0.0),
             ),
@@ -303,6 +277,74 @@ class MT5Service:
                 continue
 
         return out
+
+    # Map MT5 pending order types → (human label, direction).
+    _PENDING_TYPE_MAP = {
+        2: ("BUY LIMIT", TradeDirection.BUY),
+        3: ("SELL LIMIT", TradeDirection.SELL),
+        4: ("BUY STOP", TradeDirection.BUY),
+        5: ("SELL STOP", TradeDirection.SELL),
+        6: ("BUY STOP LIMIT", TradeDirection.BUY),
+        7: ("SELL STOP LIMIT", TradeDirection.SELL),
+    }
+
+    def list_orders(self):
+        """List working (pending) MT5 orders filtered by MAGIC."""
+        if not self._ensure_connected():
+            return []
+
+        orders = mt5.orders_get()
+        if not orders:
+            return []
+
+        from app.models import OpenOrderInfo
+
+        out: list[OpenOrderInfo] = []
+        for o in orders:
+            try:
+                if int(getattr(o, "magic", 0) or 0) != MAGIC:
+                    continue
+
+                otype = int(getattr(o, "type"))
+                label, direction = self._PENDING_TYPE_MAP.get(otype, ("PENDING", TradeDirection.BUY))
+
+                out.append(
+                    OpenOrderInfo(
+                        ticket=int(getattr(o, "ticket")),
+                        symbol=str(getattr(o, "symbol")),
+                        type=otype,
+                        type_label=label,
+                        direction=direction,
+                        volume=float(getattr(o, "volume_current", 0.0) or 0.0),
+                        price_open=float(getattr(o, "price_open", 0.0) or 0.0),
+                        sl=float(getattr(o, "sl")) if getattr(o, "sl", None) else None,
+                        tp=float(getattr(o, "tp")) if getattr(o, "tp", None) else None,
+                        magic=int(getattr(o, "magic", 0) or 0),
+                        comment=str(getattr(o, "comment", None)) if getattr(o, "comment", None) is not None else None,
+                        time=int(getattr(o, "time_setup", 0) or 0) if getattr(o, "time_setup", None) is not None else None,
+                    )
+                )
+            except Exception:
+                continue
+
+        return out
+
+    def cancel_order(self, order_ticket: int) -> OrderResponse:
+        """Cancel (remove) a working pending order by ticket."""
+        if not self._ensure_connected():
+            return OrderResponse(success=False, error="MT5 not connected")
+
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": int(order_ticket),
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            return OrderResponse(success=False, error=f"order_send returned None ({mt5.last_error()})")
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            return OrderResponse(success=False, ticket=int(order_ticket), error=self._map_mt5_error(result.retcode))
+
+        return OrderResponse(success=True, ticket=int(order_ticket), order_ticket=int(order_ticket))
 
     def resolve_position_ticket(self, symbol: str, direction: TradeDirection) -> Optional[int]:
         """Resolve newest open position ticket by (symbol, side, MAGIC).
@@ -351,41 +393,6 @@ class MT5Service:
             pass
 
         return None
-
-    def move_sl_to_be(self, request: MoveSLToBERequest) -> OrderResponse:
-        if not self._ensure_connected():
-            return OrderResponse(success=False, error="MT5 not connected")
-
-        position = self._resolve_position(request.ticket)
-        if not position:
-            return OrderResponse(success=False, error=f"Position not found for ticket {request.ticket}")
-
-        symbol = str(position.symbol)
-        info = mt5.symbol_info(symbol)
-        digits = int(getattr(info, "digits", 5) or 5) if info else 5
-        pip_in_price = float(pip_in_price_for_symbol(symbol, digits))
-
-        buffer_price = float(request.be_buffer_pips) * pip_in_price
-        if int(position.type) == mt5.POSITION_TYPE_BUY:
-            sl_price = float(position.price_open) + buffer_price
-        else:
-            sl_price = float(position.price_open) - buffer_price
-
-        sl_price = round(sl_price, digits)
-
-        modify_request = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "symbol": symbol,
-            "sl": sl_price,
-            "tp": position.tp,
-            "position": int(position.ticket),
-        }
-
-        result = mt5.order_send(modify_request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            return OrderResponse(success=False, error=self._map_mt5_error(result.retcode))
-
-        return OrderResponse(success=True, ticket=int(position.ticket))
 
     def move_to_be(self, request: MoveToBERequest) -> OrderResponse:
         """Move SL to BE derived from MT5 position.price_open (position ticket required)."""
@@ -576,100 +583,6 @@ class MT5Service:
             error=None,
         )
 
-    def manage_tp1(self, request: TP1ManageRequest) -> TP1ManageResponse:
-        if not self._ensure_connected():
-            return TP1ManageResponse(success=False, error="MT5 not connected")
-
-        position = self._resolve_position(request.ticket)
-        if not position:
-            return TP1ManageResponse(success=False, error=f"Position not found for ticket {request.ticket}")
-
-        symbol = str(position.symbol)
-        volume_min, volume_step, volume_max = self._symbol_volume_specs(symbol)
-        pos_volume = float(position.volume)
-
-        close_requested = pos_volume * (float(request.partial_percent) / 100.0)
-        close_normalized = self._normalize_volume_floor(close_requested, volume_min, volume_step, volume_max)
-
-        # Must be >= min and align to step; otherwise do not execute.
-        if close_normalized <= 0 or not self._is_volume_exact_step(close_requested, volume_step):
-            return TP1ManageResponse(
-                success=False,
-                position_ticket=int(position.ticket),
-                closed_volume_requested=float(close_requested),
-                closed_volume_normalized=float(close_normalized),
-                error=(
-                    f"Partial close not executed: requested {close_requested:.6f} lots; "
-                    f"normalized {close_normalized:.6f} lots (min={volume_min}, step={volume_step})."
-                ),
-            )
-
-        if close_normalized > pos_volume:
-            return TP1ManageResponse(
-                success=False,
-                position_ticket=int(position.ticket),
-                closed_volume_requested=float(close_requested),
-                closed_volume_normalized=float(close_normalized),
-                error=f"Partial close not executed: requested close volume exceeds position volume ({pos_volume}).",
-            )
-
-        # Execute partial close
-        close_type = mt5.ORDER_TYPE_SELL if int(position.type) == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
-        tick = mt5.symbol_info_tick(symbol)
-        if not tick:
-            return TP1ManageResponse(success=False, error=f"No tick data for {symbol}")
-
-        close_price = float(tick.bid) if close_type == mt5.ORDER_TYPE_SELL else float(tick.ask)
-
-        close_request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": float(close_normalized),
-            "type": close_type,
-            "position": int(position.ticket),
-            "price": close_price,
-            "deviation": 10,
-            "magic": 123456,
-            "comment": f"TP1 partial close {close_normalized} lots",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-
-        result = mt5.order_send(close_request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            return TP1ManageResponse(
-                success=False,
-                position_ticket=int(position.ticket),
-                closed_volume_requested=float(close_requested),
-                closed_volume_normalized=float(close_normalized),
-                error=self._map_mt5_error(result.retcode),
-            )
-
-        sl_set = None
-        if request.move_to_be_enabled:
-            move_res = self.move_sl_to_be(MoveToBERequest(ticket=int(position.ticket), be_buffer_pips=request.be_buffer_pips, ui_armed=True))
-            if move_res.success:
-                # Re-fetch position to read SL
-                pos2 = mt5.positions_get(ticket=int(position.ticket))
-                if pos2:
-                    sl_set = float(pos2[0].sl) if pos2[0].sl else None
-            else:
-                return TP1ManageResponse(
-                    success=False,
-                    position_ticket=int(position.ticket),
-                    closed_volume_requested=float(close_requested),
-                    closed_volume_normalized=float(close_normalized),
-                    error=f"Partial close done but move-to-BE failed: {move_res.error}",
-                )
-
-        return TP1ManageResponse(
-            success=True,
-            position_ticket=int(position.ticket),
-            closed_volume_requested=float(close_requested),
-            closed_volume_normalized=float(close_normalized),
-            sl_price_set=sl_set,
-        )
-
     def place_order(self, request: OrderRequest) -> OrderResponse:
         """
         Place a market or limit order.
@@ -805,42 +718,6 @@ class MT5Service:
                 "post-fill SL modify failed for %d: retcode=%s sl=%s",
                 position_ticket, getattr(result, "retcode", None), sl_price,
             )
-
-    def modify_sl(self, request: ModifySLRequest) -> OrderResponse:
-        """
-        Modify stop loss of an open position.
-
-        Args:
-            request: Modify SL parameters
-
-        Returns:
-            OrderResponse with success status
-        """
-        if not self._ensure_connected():
-            return OrderResponse(success=False, error="MT5 not connected")
-
-        # Get position info
-        position = self._resolve_position(request.ticket)
-        if not position:
-            return OrderResponse(success=False, error=f"Position not found for ticket {request.ticket}")
-
-        # Prepare modify request
-        modify_request = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "symbol": position.symbol,
-            "sl": request.sl_price,
-            "tp": position.tp,  # Keep existing TP
-            "position": int(position.ticket),
-        }
-
-        result = mt5.order_send(modify_request)
-
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            error_msg = self._map_mt5_error(result.retcode)
-            return OrderResponse(success=False, error=error_msg)
-
-        return OrderResponse(success=True, ticket=int(position.ticket))
-
 
 # Singleton instance
 mt5_service = MT5Service()
@@ -1274,15 +1151,43 @@ class TP1WatcherManager:
             del self._tp1_done[t]
             self._tracked_positions.pop(t, None)
 
+    @staticmethod
+    def _closing_deal_reason(position_ticket: int) -> Optional[int]:
+        """Reason code of the position's closing (DEAL_ENTRY_OUT) deal, if any.
+
+        MT5 DEAL_REASON_*: 0=client, 1=mobile, 2=web, 3=expert, 4=SL, 5=TP, 6=SO.
+        """
+        try:
+            deals = mt5.history_deals_get(position=position_ticket)
+            if not deals:
+                return None
+            out_entry = getattr(mt5, "DEAL_ENTRY_OUT", 1)
+            outs = [d for d in deals if int(getattr(d, "entry", -1)) == out_entry]
+            if not outs:
+                return None
+            latest = max(outs, key=lambda d: int(getattr(d, "time_msc", 0) or getattr(d, "time", 0) or 0))
+            return int(getattr(latest, "reason", -1))
+        except Exception:
+            return None
+
     def _detect_sl_closure(self, ticket: int):
-        """Check if a disappeared position was closed by SL and store event."""
+        """Emit an SL event only if a disappeared position was actually closed by
+        its stop loss (or a stop-out) — not by a manual/app close or TP1."""
         was_tp1 = self._tp1_done.get(ticket, False)
         cached = self._tracked_positions.get(ticket)
 
         if not cached or was_tp1:
             return
 
-        # Position disappeared without TP1 firing → likely SL hit
+        # Only report a real SL / stop-out. Manual or app-initiated closes have a
+        # different deal reason and get their own UI feedback, so skip those to
+        # avoid a misleading "SL Hit" toast.
+        reason = self._closing_deal_reason(ticket)
+        sl_reasons = {getattr(mt5, "DEAL_REASON_SL", 4), getattr(mt5, "DEAL_REASON_SO", 6)}
+        if reason not in sl_reasons:
+            logger.info("Position %d closed (deal reason=%s) — not an SL; no SL event emitted", ticket, reason)
+            return
+
         sl_price = cached["sl"]
         entry = cached["entry"]
         pip_in_price = cached["pip_in_price"]

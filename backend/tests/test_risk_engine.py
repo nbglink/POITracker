@@ -90,14 +90,22 @@ def test_remaining_volume_reflects_partial_close() -> None:
     assert out.remaining_volume == round(out.volume * 0.5, 2)
 
 
+# XAUUSD: one pip = 0.1 in price (consistent with pip_value_per_1_lot=10 over a
+# 100 oz contract). A 2-pip buffer is therefore 0.2 in price, not 2.0.
 def test_be_sl_price_buy_direction_with_buffer() -> None:
-    out = RiskEngine().calculate(_xauusd(be_buffer_pips=2.0, entry_price=2000.0))
-    assert out.be_sl_price == 2002.0
+    out = RiskEngine().calculate(_xauusd(be_buffer_pips=2.0, entry_price=2000.0, pip_in_price=0.1))
+    assert abs(out.be_sl_price - 2000.2) < 1e-9
 
 
 def test_be_sl_price_sell_direction_with_buffer() -> None:
-    out = RiskEngine().calculate(_xauusd(direction=TradeDirection.SELL, be_buffer_pips=2.0))
-    assert out.be_sl_price == 1998.0
+    out = RiskEngine().calculate(_xauusd(direction=TradeDirection.SELL, be_buffer_pips=2.0, pip_in_price=0.1))
+    assert abs(out.be_sl_price - 1999.8) < 1e-9
+
+
+def test_be_sl_price_without_pip_in_price_falls_back_to_entry() -> None:
+    # No pip_in_price (MT5 unavailable) -> buffer can't be converted; BE = entry.
+    out = RiskEngine().calculate(_xauusd(be_buffer_pips=2.0, entry_price=2000.0))
+    assert out.be_sl_price == 2000.0
 
 
 def test_volume_step_larger_than_raw_floors_to_zero_then_min() -> None:

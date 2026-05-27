@@ -1,27 +1,4 @@
 /**
- * API response wrapper
- */
-export interface ApiResponse<T> {
-  data: T | null;
-  error: string | null;
-  loading: boolean;
-}
-
-/**
- * MT5 connection status
- */
-export interface MT5Status {
-  connected: boolean;
-  account_info: {
-    balance: number;
-    equity: number;
-    margin: number;
-    login: number;
-  } | null;
-  terminal_info: Record<string, unknown> | null;
-}
-
-/**
  * Order request for MT5 execution.
  *
  * For market orders prefer `stop_pips` so the backend anchors SL to the
@@ -51,15 +28,6 @@ export interface PartialCloseRequest {
   ticket?: number;
   volume?: number;
 
-  ui_armed: boolean;
-}
-
-/**
- * Modify SL request
- */
-export interface ModifySLRequest {
-  ticket: number;
-  sl_price: number;
   ui_armed: boolean;
 }
 
@@ -124,33 +92,10 @@ export interface PositionResponse {
   error: string | null;
 }
 
-export interface MoveSLToBERequest {
-  ticket: number;
-  be_buffer_pips: number;
-  ui_armed: boolean;
-}
-
 export interface MoveToBERequest {
   position_ticket: number;
   buffer_pips: number;
   ui_armed: boolean;
-}
-
-export interface TP1ManageRequest {
-  ticket: number;
-  partial_percent: number;
-  move_to_be_enabled: boolean;
-  be_buffer_pips: number;
-  ui_armed: boolean;
-}
-
-export interface TP1ManageResponse {
-  success: boolean;
-  position_ticket: number | null;
-  closed_volume_requested: number | null;
-  closed_volume_normalized: number | null;
-  sl_price_set: number | null;
-  error: string | null;
 }
 
 export interface TP1WatcherSetResponse {
