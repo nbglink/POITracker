@@ -42,8 +42,12 @@ if errorlevel 1 goto :err
 
 echo.
 echo DONE -^> "%ROOT%\desktop\dist\POI Tracker.exe"
-rem Desktop entry is a shortcut to the built exe (no duplicated copy); icon comes
-rem from the exe's embedded resource. Remove any old copied exe from earlier builds.
+rem Carry the current backend config next to the exe so MT5_EXECUTION_ENABLED and
+rem optional auto-login apply to the packaged app. Edit desktop\dist\.env later
+rem and restart the app to reload (no rebuild needed).
+if exist "%ROOT%\backend\.env" copy /Y "%ROOT%\backend\.env" "%ROOT%\desktop\dist\.env" >nul
+rem Desktop entry is a shortcut to the built exe (no duplicated copy); the icon
+rem comes from the exe's embedded resource. Remove any old copied exe.
 del "%USERPROFILE%\Desktop\POI Tracker.exe" >nul 2>&1
 powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut([Environment]::GetFolderPath('Desktop')+'\POI Tracker.lnk'); $sc.TargetPath='%ROOT%\desktop\dist\POI Tracker.exe'; $sc.WorkingDirectory='%ROOT%\desktop\dist'; $sc.IconLocation='%ROOT%\desktop\dist\POI Tracker.exe,0'; $sc.Save(); ie4uinit.exe -show"
 echo Created Desktop shortcut: "POI Tracker.lnk"

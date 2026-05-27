@@ -53,6 +53,16 @@ async def get_armed_status():
     return {"armed": execution_guard._ui_armed}
 
 
+@router.get("/mt5/execution-status")
+async def get_execution_status():
+    """Read-only: whether the backend execution gate (env var) is enabled.
+
+    Useful for diagnostics and so the UI can explain why execution is blocked.
+    This does NOT mutate anything — the gate is set only via MT5_EXECUTION_ENABLED.
+    """
+    return execution_guard.get_execution_status()
+
+
 @router.get("/mt5/symbols")
 async def get_symbols():
     """Return available symbols from the connected MT5 terminal.
