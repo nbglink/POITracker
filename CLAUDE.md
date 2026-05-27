@@ -29,9 +29,18 @@ npm run build                    # tsc + vite build (typecheck is part of build)
 npm run lint                     # eslint, --max-warnings 0
 ```
 
-Backend test scripts are **plain scripts, not pytest** — run with `python backend/test_endpoints.py` etc. They hit a live `TestClient(app)` (or a running server for `test_with_server.py`). There is no configured test runner. The risk engine is pure math and can be unit-tested in isolation if you add a runner.
+One-click run: `launcher/` builds a single Windows `.exe` (`launcher\build.bat`) that boots backend + frontend, waits for both, opens the browser to `localhost:5173`, and tears them down on close. It spawns the same `python backend/run.py` and `npm run dev` — editing source needs no rebuild (Uvicorn restart / Vite HMR); only rebuild when changing `launcher/launcher.py`. The project root is hardcoded at the top of `launcher.py`. Build output (`launcher/build|dist`, `*.spec`) is gitignored; the `.exe` is not committed.
 
-Single endpoint smoke check: `python backend/verify_endpoints.py` (or `verify_endpoints_urllib.py`).
+Tests are pytest, configured in `backend/pyproject.toml` (`testpaths = ["tests"]`, `addopts = -q`):
+
+```powershell
+cd backend
+pip install -r requirements-dev.txt   # requirements.txt + pytest
+pytest                                 # whole suite
+pytest tests/test_risk_engine.py::test_baseline_xauusd_50pip_1pct   # single test
+```
+
+Current coverage is `tests/test_risk_engine.py` — pure-math unit tests of `risk_engine` that import no MT5, so they run without a terminal. There are no automated tests for `mt5_service` or the live endpoints.
 
 ## Architecture — what requires reading multiple files to grasp
 

@@ -318,7 +318,8 @@ Base URL: `http://localhost:8000`
 |--------|----------|-------------|
 | GET | `/mt5/armed` | Current armed state |
 | POST | `/mt5/armed` | Set UI armed state `{ armed: bool }` |
-| POST | `/mt5/execution-enable` | Set backend execution flag `{ armed: bool }` |
+
+> The backend execution flag is **not** runtime-settable via the API. It is gated solely by the `MT5_EXECUTION_ENABLED` env var, set deliberately by the operator, so the two authorization layers (env var + UI armed) stay independent.
 
 ### 7.4 Order & Position Operations *(execution-guarded)*
 

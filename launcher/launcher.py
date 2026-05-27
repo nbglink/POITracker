@@ -19,6 +19,11 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 NODE_MODULES = FRONTEND_DIR / "node_modules"
 
+# MT5 terminal to launch before the backend. The backend needs this running to
+# serve /mt5/* requests. Set to None to skip launching it.
+MT5_TERMINAL = Path(r"C:\Program Files\STARTRADER Financial MetaTrader 5\terminal64.exe")
+MT5_STARTUP_WAIT = 8  # seconds to give the terminal to come up and auto-login
+
 BACKEND_HEALTH = "http://127.0.0.1:8000/health"
 FRONTEND_URL = "http://localhost:5173"
 BANNER = "=" * 56 + "\n  POI Tracker - Trade Planner\n" + "=" * 56
@@ -63,7 +68,18 @@ def main() -> int:
         else 0
     )
 
-    print("\n[1/3] Starting backend (FastAPI on :8000)...", flush=True)
+    if MT5_TERMINAL is not None:
+        print(f"\n[1/4] Starting MT5 terminal...", flush=True)
+        if MT5_TERMINAL.exists():
+            # Detached: we don't manage or kill the terminal on exit. If it's
+            # already running, this just focuses the existing instance.
+            subprocess.Popen([str(MT5_TERMINAL)], cwd=str(MT5_TERMINAL.parent))
+            time.sleep(MT5_STARTUP_WAIT)
+            print("       MT5 terminal launched")
+        else:
+            print(f"       WARNING: MT5 not found at {MT5_TERMINAL} - start it manually")
+
+    print("\n[2/4] Starting backend (FastAPI on :8000)...", flush=True)
     backend = subprocess.Popen(
         [str(VENV_PYTHON), "run.py"],
         cwd=str(BACKEND_DIR),
@@ -76,7 +92,7 @@ def main() -> int:
         return 1
     print("       backend ready")
 
-    print("[2/3] Starting frontend (Vite on :5173)...", flush=True)
+    print("[3/4] Starting frontend (Vite on :5173)...", flush=True)
     try:
         frontend = subprocess.Popen(
             ["npm.cmd", "run", "dev"],
@@ -98,7 +114,7 @@ def main() -> int:
         return 1
     print("       frontend ready")
 
-    print("[3/3] Opening browser...", flush=True)
+    print("[4/4] Opening browser...", flush=True)
     webbrowser.open(FRONTEND_URL)
     print(f"\nApp running at {FRONTEND_URL}")
     print("Close this window to stop the app.\n", flush=True)
