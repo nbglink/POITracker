@@ -20,6 +20,8 @@ export interface RiskCalcInput {
   move_to_be_enabled: boolean;
   be_buffer_pips: number;
   pip_value_per_1_lot: number;
+  /** Optional; the backend fills this from MT5 specs. The frontend does not send it. */
+  pip_in_price?: number | null;
   min_volume: number;
   volume_step: number;
 }

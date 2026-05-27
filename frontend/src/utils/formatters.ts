@@ -10,9 +10,25 @@ export function formatVolume(v: number): string {
   return v.toFixed(2);
 }
 
-/** Format a monetary amount with sign and $ prefix; returns '' for null/undefined. */
-export function formatMoney(v: number | null | undefined): string {
+const CURRENCY_PREFIX: Record<string, string> = {
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  JPY: '¥',
+  CHF: 'CHF ',
+  AUD: 'A$',
+  CAD: 'C$',
+};
+
+/**
+ * Format a monetary amount with sign and currency prefix; '' for null/undefined.
+ * `currency` is an account currency code (e.g. "EUR"); unknown codes fall back
+ * to "<CODE> ", and an unset currency defaults to USD ($).
+ */
+export function formatMoney(v: number | null | undefined, currency?: string): string {
   if (v == null) return '';
-  const sign = v >= 0 ? '+' : '';
-  return `${sign}$${Math.abs(v).toFixed(2)}`;
+  const sign = v >= 0 ? '+' : '-';
+  const code = (currency || 'USD').toUpperCase();
+  const prefix = CURRENCY_PREFIX[code] ?? `${code} `;
+  return `${sign}${prefix}${Math.abs(v).toFixed(2)}`;
 }

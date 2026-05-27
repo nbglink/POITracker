@@ -71,6 +71,24 @@ export interface OpenPositionInfo {
   time: number | null;
 }
 
+/** Raw working (pending) order from GET /mt5/orders (magic-filtered server-side). */
+export interface OpenOrderInfo {
+  ticket: number;
+  symbol: string;
+  type: number;
+  /** Human label, e.g. "BUY LIMIT". */
+  type_label: string;
+  direction: 'buy' | 'sell';
+  volume: number;
+  /** Resting (trigger) price. */
+  price_open: number;
+  sl: number | null;
+  tp: number | null;
+  magic: number;
+  comment: string | null;
+  time: number | null;
+}
+
 /** Position snapshot returned by backend. */
 export interface PositionInfo {
   position_ticket: number;
@@ -82,6 +100,8 @@ export interface PositionInfo {
   tp: number | null;
   digits: number;
   pip_in_price: number;
+  /** Account currency per pip per 1.0 lot (MT5-derived); 0 if unavailable. */
+  pip_value_per_1_lot: number;
   volume_min: number;
   volume_step: number;
 }

@@ -5,6 +5,7 @@ import {
   OrderResponse,
   PartialCloseResponse,
   OpenPositionInfo,
+  OpenOrderInfo,
   PositionResponse,
   MoveToBERequest,
   TP1WatcherSetResponse,
@@ -19,11 +20,6 @@ export async function getArmedStatus(): Promise<boolean> {
 export async function setArmedStatus(armed: boolean): Promise<boolean> {
   const response = await apiClient.post('/mt5/armed', { armed });
   return response.data.armed;
-}
-
-export async function setBackendExecution(enabled: boolean): Promise<boolean> {
-  const response = await apiClient.post<{ backend_enabled: boolean }>('/mt5/execution-enable', { armed: enabled });
-  return response.data.backend_enabled;
 }
 
 export interface MT5SymbolInfo {
@@ -80,6 +76,17 @@ export async function getPosition(ticket: number): Promise<PositionResponse> {
 
 export async function getPositions(): Promise<OpenPositionInfo[]> {
   const response = await apiClient.get('/mt5/positions');
+  return response.data;
+}
+
+export async function getOrders(): Promise<OpenOrderInfo[]> {
+  const response = await apiClient.get('/mt5/orders');
+  return response.data;
+}
+
+/** Cancel (remove) a working pending order. Requires dual authorization. */
+export async function cancelOrder(orderTicket: number, ui_armed: boolean): Promise<OrderResponse> {
+  const response = await apiClient.post('/mt5/order/cancel', { order_ticket: orderTicket, ui_armed });
   return response.data;
 }
 

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getPosition, moveToBE, partialClose, closePosition, setTP1Watcher, getTP1WatcherStatus } from '../api/mt5';
 import { PartialCloseResponse, PositionInfo } from '../types';
 import { Button } from './ui/Button';
 import { formatVolume as fmtVol, formatMoney as fmtMoney } from '../utils/formatters';
+import { useLiveData } from '../hooks/useLiveData';
 
 interface PostOrderPanelProps {
   orderTicket: number;
@@ -14,6 +15,8 @@ interface PostOrderPanelProps {
   partialPercent: number;
   moveToBEEnabled: boolean;
   beBufferPips: number;
+  /** Account currency code (e.g. "EUR") for money formatting. */
+  currency?: string;
   onRemove: () => void;
   onActionComplete: (action: string, success: boolean, message: string) => void;
 }
@@ -28,6 +31,7 @@ export function PostOrderPanel({
   partialPercent,
   moveToBEEnabled,
   beBufferPips,
+  currency,
   onRemove,
   onActionComplete
 }: PostOrderPanelProps) {
@@ -45,9 +49,6 @@ export function PostOrderPanel({
     step: number;
     blockedReason: string | null;
   } | null>(null);
-
-  const lastSeenTp1TsRef = useRef<number>(0);
-  const lastSeenSlTsRef = useRef<number>(0);
 
   useEffect(() => {
     setPartialPercentLocal(partialPercent);
@@ -82,6 +83,31 @@ export function PostOrderPanel({
       });
     return () => { isMounted = false; };
   }, [positionTicket]);
+
+  // Live price for this position's symbol → real-time pip P&L. Account stream
+  // off; we only need the tick. Subscribes once the position is resolved.
+  const { tick: liveTick } = useLiveData({
+    symbol: position?.symbol,
+    enablePrice: position != null,
+    enableAccount: false,
+  });
+
+  // Running P&L in pips (and money when pip value is known), computed from the
+  // live tick against the fill price. Exit side: a BUY closes at bid, SELL at ask.
+  const livePnl = useMemo(() => {
+    if (!position || !liveTick || liveTick.symbol !== position.symbol) return null;
+    if (!(position.pip_in_price > 0)) return null;
+    const exit = position.direction === 'buy' ? liveTick.bid : liveTick.ask;
+    const pips =
+      position.direction === 'buy'
+        ? (exit - position.price_open) / position.pip_in_price
+        : (position.price_open - exit) / position.pip_in_price;
+    const money =
+      position.pip_value_per_1_lot > 0
+        ? pips * position.pip_value_per_1_lot * position.volume
+        : null;
+    return { pips, exit, money };
+  }, [position, liveTick]);
 
   const tp1Price = useMemo(() => {
     if (!position || tp1Pips == null) return null;
@@ -199,37 +225,10 @@ export function PostOrderPanel({
           setWatcherStatus('Watcher stopped');
         }
 
-        const tp1Evt = status.last_tp1_event;
-        if (tp1Evt && tp1Evt.timestamp > lastSeenTp1TsRef.current) {
-          lastSeenTp1TsRef.current = tp1Evt.timestamp;
-          setTp1Done(true);
-
-          const pips = tp1Evt.pips_profit ?? 0;
-          const profitSign = pips >= 0 ? '+' : '';
-          const beNote = tp1Evt.be_status === 'ok' ? ' · SL → BE ✓' : ` · BE: ${tp1Evt.be_status ?? 'unknown'}`;
-          const moneyStr = tp1Evt.profit_money != null ? ` · ${fmtMoney(tp1Evt.profit_money)}` : '';
-          const message =
-            `🎯 TP1 Hit!\n` +
-            `${tp1Evt.symbol} ${tp1Evt.direction} #${tp1Evt.ticket}\n` +
-            `Closed ${fmtVol(tp1Evt.close_volume ?? 0)} lots @ ${tp1Evt.close_price ?? '?'}\n` +
-            `${profitSign}${pips} pips${moneyStr}${beNote}`;
-
-          onActionComplete('tp1_watcher', true, message);
-        }
-
-        const slEvt = status.last_sl_event;
-        if (slEvt && slEvt.timestamp > lastSeenSlTsRef.current) {
-          lastSeenSlTsRef.current = slEvt.timestamp;
-
-          const moneyStr = slEvt.profit_money != null ? ` · ${fmtMoney(slEvt.profit_money)}` : '';
-          const message =
-            `🛑 SL Hit\n` +
-            `${slEvt.symbol} ${slEvt.direction} #${slEvt.ticket}\n` +
-            `Closed ${fmtVol(slEvt.volume ?? 0)} lots @ ${slEvt.sl_price ?? '?'}\n` +
-            `-${slEvt.pips_loss ?? 0} pips${moneyStr}`;
-
-          onActionComplete('sl_hit', false, message);
-        }
+        // TP1/SL toast notifications are fired by a single app-level poller in
+        // Calculator, so they show even after this position's card unmounts
+        // (an SL/TP close removes the card). This poll only drives the card's
+        // own status text above.
       } catch {
         consecutiveFailures += 1;
       }
@@ -246,7 +245,7 @@ export function PostOrderPanel({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [autoTp1Enabled, onActionComplete]);
+  }, [autoTp1Enabled]);
 
   const handleTP1Now = async () => {
     if (positionTicket == null) return;
@@ -336,6 +335,24 @@ export function PostOrderPanel({
         {position ? (
           <>
             <div>Symbol: {position.symbol} · Side: {position.direction.toUpperCase()} · Vol: {fmtVol(position.volume)}</div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-terminal-text-secondary">Live P&amp;L:</span>
+              {livePnl != null ? (
+                <>
+                  <span className={`font-semibold tabular-nums ${livePnl.pips >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {livePnl.pips >= 0 ? '+' : ''}{livePnl.pips.toFixed(1)} pips
+                  </span>
+                  {livePnl.money != null && (
+                    <span className={`font-semibold tabular-nums ${livePnl.money >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {fmtMoney(livePnl.money, currency)}
+                    </span>
+                  )}
+                  <span className="text-terminal-text-secondary">@ {livePnl.exit.toFixed(position.digits)}</span>
+                </>
+              ) : (
+                <span className="text-terminal-text-secondary">waiting for price…</span>
+              )}
+            </div>
             {tp1Price != null && (
               <div>
                 TP1 Price: {tp1Price} · Trigger: {position.direction === 'buy' ? 'Bid ≥ TP1' : 'Ask ≤ TP1'}

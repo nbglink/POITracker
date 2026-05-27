@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { placeOrder } from '../api/mt5';
 import { OrderRequest } from '../types';
 import { Button } from './ui/Button';
-import { useSettings } from '../context/SettingsContext';
 
 interface ExecuteTradeButtonProps {
   symbol: string;
@@ -29,36 +28,28 @@ export function ExecuteTradeButton({
   onError
 }: ExecuteTradeButtonProps) {
   const [loading, setLoading] = useState(false);
-  const { settings } = useSettings();
 
   const handleExecute = async () => {
     if (!armed) return;
 
     setLoading(true);
     try {
-      // For pending orders we can pre-compute SL because the broker will fill
-      // at the configured price. For market orders we send `stop_pips` and let
-      // the backend anchor SL to the broker's actual fill price (avoids the
-      // spread/slippage drift we were seeing).
-      const symbolPreset = settings.symbol_presets.find(p => p.symbol === symbol);
-      const pipSize = symbolPreset?.pip_size || 0.0001;
-
-      const slPrice = pendingOrder
-        ? (direction === 'buy' ? entryPrice - stopPips * pipSize : entryPrice + stopPips * pipSize)
-        : null;
-
+      // Always send only `stop_pips` and let the backend derive the SL price
+      // from the MT5-accurate pip size — pending orders anchor SL to the
+      // configured price, market orders to the broker's actual fill price.
+      // (Computing SL here from a preset pip_size risked drift vs. the broker.)
       const request: OrderRequest = {
         symbol,
         direction,
         volume,
         price: pendingOrder ? entryPrice : null,
-        sl_price: slPrice,
+        sl_price: null,
         stop_pips: stopPips,
         tp_price: null,
         ui_armed: armed,
       };
 
-      console.log('Executing order:', { symbol, direction, entry: entryPrice, sl: slPrice, stop_pips: stopPips, pipSize });
+      console.log('Executing order:', { symbol, direction, entry: entryPrice, stop_pips: stopPips, pending: pendingOrder });
 
       const response = await placeOrder(request);
 

@@ -125,7 +125,10 @@ export function InputForm({ onCalculate, loading }: InputFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (validateForm()) {
-      onCalculate(formData);
+      // Live Price ON  -> enter now at market.
+      // Live Price OFF -> trader typed a target (POI) level -> place as pending.
+      // The backend picks LIMIT vs STOP from this price relative to current.
+      onCalculate({ ...formData, pending_order: !useLivePrice });
     }
   };
 
